@@ -53,7 +53,7 @@ from core.perception.prompt_builder import (
 from core.perception.session_store import SessionStore
 
 PLUGIN_NAME = "astrbot_plugin_bilibili_watch"
-PLUGIN_VERSION = "1.1.0"  # 与 metadata.yaml 保持一致
+PLUGIN_VERSION = "1.1.1"  # 与 metadata.yaml 保持一致
 LOG = "[B站之眼evolution]"
 
 

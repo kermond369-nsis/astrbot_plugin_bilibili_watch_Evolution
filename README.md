@@ -13,6 +13,8 @@
 
 ---
 
+> **项目缘起**：本项目是在 [AcceleratorYue / astrbot_plugin_bilibili_eyes](https://github.com/AcceleratorYue/astrbot_plugin_bilibili_eyes)（「B站之眼」：子代理看 B 站视频，主模型用自己的语气回复）的基础上重构演进而来。感谢原作者的开源工作。
+
 ## 简介
 
 **B站之眼 evolution** 是一个面向 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 的 B 站视频理解插件。它把一条 B 站链接变成一份**客观、结构化、可追溯**的内容报告：先抓取元数据/字幕/弹幕/评论，再按内容特征做**双模门控**——教程攻略类走纯文本极速总结（秒级、零视觉 Token），二次元切片类走弹幕高能波峰截帧 + 视觉模型观察；没有官方字幕时，按需接入 ASR 补齐台词。
@@ -410,6 +412,7 @@ astrbot_plugin_bilibili_watch/
 
 ## 致谢
 
+- [AcceleratorYue](https://github.com/AcceleratorYue) — 原版插件 [astrbot_plugin_bilibili_eyes](https://github.com/AcceleratorYue/astrbot_plugin_bilibili_eyes) 的作者，本项目的缘起；
 - [AstrBot](https://github.com/AstrBotDevs/AstrBot) 提供的插件框架与消息平台抽象；
 - 小米 MiMo 与硅基流动 SenseVoiceSmall 提供的 ASR 能力；
 - 所有提交 Issue 与 PR 的贡献者。
