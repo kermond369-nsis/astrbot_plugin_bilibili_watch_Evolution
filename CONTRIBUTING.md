@@ -79,6 +79,17 @@ python tests/test_asr.py
 
 ## 版本与发布
 
-- `metadata.yaml` 的 `version` 与 `CHANGELOG.md` 保持一致；
-- 发布前确认仓库内没有 `config.json`、`data/`、`*.key`、`.env` 等敏感文件；
-- 打 tag（`vX.Y.Z`）并附发布说明。
+### 发布检查清单
+
+- [ ] `python tests/test_cleaners.py`、`python tests/test_asr.py`、`python tests/test_repo_hygiene.py` 全绿
+- [ ] `metadata.yaml` 的 `version` 与 `CHANGELOG.md` 一致
+- [ ] 仓库内无 `config.json`、`data/`、`credentials.json`、`*.key`、`.env` 等敏感文件
+- [ ] README 配置表与 `_conf_schema.json` 一致（CI 的 `test_repo_hygiene.py` 会校验版本与 schema 形状）
+- [ ] README 中的示例命令、链接可正常访问
+
+### 发版步骤
+
+1. 更新 `CHANGELOG.md`（新增版本段落）与 `metadata.yaml` 的 `version`；
+2. 提交后打 tag：`git tag -a vX.Y.Z -m "vX.Y.Z: 摘要"`；
+3. 推送提交与 tag：`git push origin main --tags`；
+4. 在 GitHub Releases 中基于该 tag 发布，说明直接引用 CHANGELOG 段落。
