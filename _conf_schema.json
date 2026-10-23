@@ -1,0 +1,78 @@
+{
+  "sessdata": {
+    "type": "string",
+    "description": "B站登录凭据 SESSDATA",
+    "default": "",
+    "secret": true,
+    "hint": "B站 Cookie 里的 SESSDATA。留空为游客模式（360P/480P，字幕接口容易报 -101）；推荐直接用 /bili登录 扫码，扫码凭据会覆盖此处的值。"
+  },
+  "asr_provider": {
+    "type": "string",
+    "description": "语音识别服务商",
+    "options": ["none", "mimo", "siliconflow"],
+    "default": "none",
+    "hint": "none=禁用；mimo=小米 MiMo（中文/方言/中英混杂，自带标点，响应快）；siliconflow=硅基流动 SenseVoiceSmall（日语/韩语生肉，带笑声与情绪识别）。仅当视频没有官方字幕时才会触发 ASR。"
+  },
+  "mimo_api_key": {
+    "type": "string",
+    "description": "MiMo API Key",
+    "default": "",
+    "secret": true,
+    "hint": "小米开放平台申请，接口地址 https://api.xiaomimimo.com/v1。仅 asr_provider=mimo 时生效；留空则自动跳过 ASR。"
+  },
+  "siliconflow_api_key": {
+    "type": "string",
+    "description": "硅基流动 API Key",
+    "default": "",
+    "secret": true,
+    "hint": "仅 asr_provider=siliconflow 时生效，驱动 SenseVoiceSmall 多语言转录，国内直连 https://api.siliconflow.cn/v1。"
+  },
+  "vision_provider_id": {
+    "type": "string",
+    "description": "视觉子代理模型 ID",
+    "default": "",
+    "hint": "负责看关键帧截图的模型 Provider ID，例如 xiaomi/mimo-v2.6-flash。留空则跟随当前会话主模型；主模型不支持图片时视觉模式会降级为空报告。"
+  },
+  "ffmpeg_path": {
+    "type": "string",
+    "description": "FFmpeg 路径（可留空）",
+    "default": "",
+    "hint": "留空自动探测：系统 PATH → imageio-ffmpeg 内置二进制。当前主机已安装 /usr/bin/ffmpeg，一般无需填写。"
+  },
+  "user_daily_quota": {
+    "type": "int",
+    "description": "每用户每日次数",
+    "default": 20,
+    "hint": "单用户每天允许观看的视频数，0 表示不限制。"
+  },
+  "quota_exempt_admins": {
+    "type": "bool",
+    "description": "管理员豁免次数限制",
+    "default": true,
+    "hint": "群管理员与 AstrBot 管理员不受每日次数限制。"
+  },
+  "cooldown_seconds": {
+    "type": "int",
+    "description": "同会话冷却（秒）",
+    "default": 15,
+    "hint": "同一会话两次请求的最小间隔，防止并发刷屏；0 表示不限制。"
+  },
+  "ack_enabled": {
+    "type": "bool",
+    "description": "收到视频先回执",
+    "default": true,
+    "hint": "收到视频后先回一句安抚提示，避免群友因处理等待而焦虑。"
+  },
+  "ack_template": {
+    "type": "string",
+    "description": "回执文案",
+    "default": "我去看看这个视频，稍等一下～",
+    "hint": "仅在「收到视频先回执」开启时生效，可自定义口吻。"
+  },
+  "wait_notice_enabled": {
+    "type": "bool",
+    "description": "催更时提示进度",
+    "default": true,
+    "hint": "观看期间群友再次催促时，回复已耗时与当前阶段；/stop、/reset、/new、/help 仍会正常放行。"
+  }
+}

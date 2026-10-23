@@ -1,0 +1,14 @@
+{
+  "sessdata": "",
+  "asr_provider": "none",
+  "mimo_api_key": "",
+  "siliconflow_api_key": "",
+  "vision_provider_id": "",
+  "ffmpeg_path": "",
+  "user_daily_quota": 20,
+  "quota_exempt_admins": true,
+  "cooldown_seconds": 15,
+  "ack_enabled": true,
+  "ack_template": "我去看看这个视频，稍等一下～",
+  "wait_notice_enabled": true
+}

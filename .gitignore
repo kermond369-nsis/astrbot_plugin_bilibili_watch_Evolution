@@ -1,0 +1,33 @@
+# ---- 敏感配置（切勿提交）----
+config.json
+config.local.json
+credentials.json
+data/credentials.json
+*.key
+*.pem
+.env
+.env.*
+
+# ---- 插件运行时数据 ----
+data/
+tests/temp_audio/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- 本地运维脚本与产物（不属于仓库）----
+_local/
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
