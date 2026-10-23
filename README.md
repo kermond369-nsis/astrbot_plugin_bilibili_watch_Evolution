@@ -98,15 +98,17 @@
 3. 安装后到插件配置页按需填写参数（见[配置](#配置)）；
 4. 重启 AstrBot 或点击插件页的「重载」。
 
+> 从 URL / 压缩包安装时，AstrBot 会读取 `metadata.yaml` 并把插件目录重命名为其中的 `name`，因此仓库名与本插件名不同也不影响安装。
+
 ### 方式二：手动安装
 
 ```bash
 cd <AstrBot>/data/plugins
-git clone https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch.git
-# 若下载的是压缩包，解压后目录名必须是 astrbot_plugin_bilibili_watch
+# 注意：目录名必须显式指定为 metadata.yaml 里的 name
+git clone https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution.git astrbot_plugin_bilibili_watch
 ```
 
-> 目录名必须与 `metadata.yaml` 中的 `name` 一致，否则 AstrBot 不会识别该插件。
+> 手动复制/解压时同样要保证目录名为 `astrbot_plugin_bilibili_watch`，否则 AstrBot 会把它当成另一个插件（配置与数据目录都会变）。
 
 ### 方式三：AstrBot 运行在 Docker 中
 

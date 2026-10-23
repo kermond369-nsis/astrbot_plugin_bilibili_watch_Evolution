@@ -24,6 +24,6 @@
 
 - 首次公开版本：双模门控、文本/弹幕/字幕/评论清洗、dHash 关键帧去重、MiMo / SiliconFlow ASR、30 分钟会话记忆、扫码登录解锁 1080P、每日配额与会话冷却、`bilibili_watch` LLM 工具。
 
-[Unreleased]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch/compare/v1.1.0...HEAD
-[1.1.0]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch/releases/tag/v1.1.0
-[1.0.0]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch/releases/tag/v1.0.0
+[Unreleased]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/releases/tag/v1.1.0
+[1.0.0]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/releases/tag/v1.0.0

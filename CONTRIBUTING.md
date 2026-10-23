@@ -4,14 +4,14 @@
 
 ## 开始之前
 
-1. 先搜索已有的 [Issues](https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch/issues)，避免重复；
+1. 先搜索已有的 [Issues](https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/issues)，避免重复；
 2. 功能类改动建议先开 Issue 讨论方案；
 3. **不要**在任何 Issue / PR / 截图中粘贴 API Key、SESSDATA、Cookie、QQ 号等敏感信息。
 
 ## 开发环境
 
 ```bash
-git clone https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch.git
+git clone https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution.git
 cd astrbot_plugin_bilibili_watch
 
 # 离线测试无需 AstrBot 环境（只依赖标准库）

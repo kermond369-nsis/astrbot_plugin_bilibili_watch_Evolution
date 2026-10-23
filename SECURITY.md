@@ -11,7 +11,7 @@
 
 **不要在公开 Issue 中披露漏洞或敏感信息。**
 
-请通过 GitHub 的 [Private vulnerability reporting](https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch/security/advisories/new) 提交，或给维护者发私信。报告中请包含：
+请通过 GitHub 的 [Private vulnerability reporting](https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/security/advisories/new) 提交，或给维护者发私信。报告中请包含：
 
 - 受影响的版本与提交；
 - 复现步骤（可脱敏）；
