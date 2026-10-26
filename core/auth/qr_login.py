@@ -1,7 +1,7 @@
 """B 站二维码扫码登录与凭据提取引擎（QR Login Client）。
 
 纯标准库 urllib 实现，无需 curl_cffi 或庞大依赖：
-1. 申请登录二维码 (url + qrcode_key)；
+1. 申请登录二维码 (url + qrcode_key)，二维码在本地渲染为 PNG（不经过任何第三方服务）；
 2. 兼容 2024~2026 年 B 站改版后的 crossDomain 跨域票据链接跟随，从 Set-Cookie 中提取完整凭据；
 3. 提取 SESSDATA, bili_jct, DedeUserID 与 refresh_token (ac_time_value)。
 """
@@ -15,6 +15,7 @@ import re
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from astrbot.api import logger
@@ -32,7 +33,29 @@ UA = (
 class QrCodeSession:
     url: str
     qrcode_key: str
-    qr_image_url: str  # 可直接访问的图片地址 (如 api.qrserver.com 生成)
+    qr_image_path: Path | None = None  # 本地渲染的二维码 PNG（无第三方依赖时为 None）
+
+
+def render_qr_png(data: str, out_dir: Path) -> Path | None:
+    """在本地把登录链接渲染成二维码 PNG。
+
+    - 不调用任何第三方二维码服务，含 qrcode_key 的登录链接不会离开本机；
+    - 依赖可选的 ``qrcode`` 库（AstrBot 常见环境已自带）；缺失时返回 None，
+      由调用方退化为「只发文本链接」。
+    """
+    try:
+        import qrcode  # type: ignore[import-not-found]
+    except ImportError:
+        logger.warning("未安装 qrcode 库，扫码登录仅提供文本链接（不会调用第三方服务）")
+        return None
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / "login_qr.png"
+        qrcode.make(data).save(path)
+        return path
+    except Exception as exc:
+        logger.warning(f"本地二维码渲染失败，退化为文本链接: {exc}")
+        return None
 
 
 @dataclass
@@ -46,8 +69,12 @@ class BiliQrLoginService:
     def __init__(self, timeout: int = 15):
         self.timeout = timeout
 
-    def request_qrcode(self) -> QrCodeSession:
-        """申请登录二维码"""
+    def request_qrcode(self, qr_dir: Path | None = None) -> QrCodeSession:
+        """申请登录二维码。
+
+        Args:
+            qr_dir: 本地二维码 PNG 的存放目录；为 None 时只返回链接，不渲染图片。
+        """
         req = urllib.request.Request(QR_GENERATE_URL, headers={"User-Agent": UA, "Referer": "https://www.bilibili.com/"})
         with urllib.request.urlopen(req, timeout=self.timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
@@ -62,11 +89,10 @@ class BiliQrLoginService:
         if not url or not qrcode_key:
             raise RuntimeError("二维码生成返回数据异常")
 
-        # 生成可直接发送/渲染的在线二维码图 URL (避免本地缺少 PIL/segno 时报错)
-        encoded_url = urllib.parse.quote(url)
-        qr_img_url = f"https://api.qrserver.com/v1/create-qr-code/?data={encoded_url}&size=280x280"
+        # 本地渲染，登录链接（含 qrcode_key）不出本机
+        qr_path = render_qr_png(url, qr_dir) if qr_dir else None
 
-        return QrCodeSession(url=url, qrcode_key=qrcode_key, qr_image_url=qr_img_url)
+        return QrCodeSession(url=url, qrcode_key=qrcode_key, qr_image_path=qr_path)
 
     def poll_status(self, qrcode_key: str) -> PollResult:
         """轮询二维码扫码状态"""

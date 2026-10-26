@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-10-26
+
+### 改进
+
+- **上下文注入方式**：视频报告/追问上下文改为通过 `req.extra_user_content_parts` + `mark_as_temp()` 追加注入，保留用户原始发言、不写入会话历史；旧环境不支持时自动回退为改写 `req.prompt`。
+- **登录二维码本地渲染**：移除对 `api.qrserver.com` 的依赖，改用 `qrcode` 库在本地生成 PNG（`data/plugin_data/astrbot_plugin_bilibili_watch/qrcode/`），含 `qrcode_key` 的登录链接不再发往第三方；未安装 `qrcode` 时退化为只发文本链接。
+- **流地址白名单**：ffmpeg 抽音轨/截帧前校验输入为 http(s)，保持输入源白名单意识。
+
 ## [1.1.2] - 2026-10-23
 
 ### 修复
@@ -37,8 +45,9 @@
 
 - 首次公开版本：双模门控、文本/弹幕/字幕/评论清洗、dHash 关键帧去重、MiMo / SiliconFlow ASR、30 分钟会话记忆、扫码登录解锁 1080P、每日配额与会话冷却、`bilibili_watch` LLM 工具。
 
-[Unreleased]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/compare/v1.1.2...HEAD
-[1.1.1]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/releases/tag/v1.1.1
+[Unreleased]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/compare/v1.1.3...HEAD
+[1.1.3]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/releases/tag/v1.1.3
 [1.1.2]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/releases/tag/v1.1.2
+[1.1.1]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/releases/tag/v1.1.1
 [1.1.0]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/releases/tag/v1.1.0
 [1.0.0]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/releases/tag/v1.0.0

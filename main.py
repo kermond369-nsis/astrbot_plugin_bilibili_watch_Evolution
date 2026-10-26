@@ -28,6 +28,7 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import Image, Plain
 from astrbot.api.star import Context, Star
+from astrbot.core.agent.message import TextPart
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
@@ -54,7 +55,7 @@ from core.perception.prompt_builder import (
 from core.perception.session_store import SessionStore
 
 PLUGIN_NAME = "astrbot_plugin_bilibili_watch"
-PLUGIN_VERSION = "1.1.2"  # 与 metadata.yaml 保持一致
+PLUGIN_VERSION = "1.1.3"  # 与 metadata.yaml 保持一致
 LOG = "[B站之眼evolution]"
 
 # 运行时数据统一放在 AstrBot 标准插件数据目录：data/plugin_data/<插件名>
@@ -232,7 +233,8 @@ class BilibiliWatchPlugin(Star):
             if self._session_store.is_followup_message(umo, user_msg):
                 followup_prompt = self._session_store.build_followup_prompt(umo, user_msg)
                 if followup_prompt:
-                    req.prompt = followup_prompt + ("\n\n" + (req.prompt or ""))
+                    if not self._inject_temp_context(req, followup_prompt):
+                        req.prompt = followup_prompt + ("\n\n" + (req.prompt or ""))
                     logger.info(f"{LOG} 成功注入 30 分钟会话追问记忆")
             return
 
@@ -256,21 +258,49 @@ class BilibiliWatchPlugin(Star):
             if digest and bundle:
                 # 存入 30 分钟会话记忆 (供后续精准追问使用)
                 self._session_store.put(umo, bundle, digest)
-                # 客观结构化呈现，彻底剔除拟人口水话
-                req.prompt = (
+                # 客观结构化呈现：以「临时附加内容」方式注入，不替换用户原始发言，
+                # 也不会写入会话历史（官方推荐做法）。
+                report = (
                     f"【视频《{bundle.meta.title}》客观结构化分析报告】\n\n"
                     f"{digest}\n\n"
                     "请将上述提炼内容清晰、完整、干练地交付给用户。保持工具属性的严谨与客观，不输出多余的客套、闲聊或口水话。"
                 )
+                if not self._inject_temp_context(req, report):
+                    req.prompt = report
                 # 本次请求已把视频看完了，摘掉工具避免主模型重复抓一遍
                 self._suppress_watch_tool(req)
             else:
-                req.prompt = "（视频内容获取失败，可能触发网络或接口风控，请简要客观地向用户说明）"
+                note = "（视频内容获取失败，可能触发网络或接口风控，请简要客观地向用户说明）"
+                if not self._inject_temp_context(req, note):
+                    req.prompt = note
         except Exception as exc:
             logger.error(f"{LOG} 视频全流程处理异常: {exc}", exc_info=True)
-            req.prompt = "（这次获取内容遇到了点小问题，请稍后再试）\n" + (req.prompt or "")
+            note = "（这次获取内容遇到了点小问题，请稍后再试）"
+            if not self._inject_temp_context(req, note):
+                req.prompt = note + "\n" + (req.prompt or "")
         finally:
             self._active_jobs.pop(umo, None)
+
+    @staticmethod
+    def _inject_temp_context(req, text: str) -> bool:
+        """把文本作为「仅本次请求可见」的附加用户内容注入。
+
+        AstrBot 4.x 推荐用 `req.extra_user_content_parts` + `mark_as_temp()` 追加，
+        既保留用户原始发言，也不会写进会话历史；旧版本不支持时返回 False，
+        由调用方回退到修改 `req.prompt`。
+        """
+        parts = getattr(req, "extra_user_content_parts", None)
+        if parts is None:
+            return False
+        try:
+            part = TextPart(text=text)
+            if hasattr(part, "mark_as_temp"):
+                part = part.mark_as_temp()
+            parts.append(part)
+            return True
+        except Exception as exc:
+            logger.warning(f"{LOG} 注入临时上下文失败，回退为 prompt 方式: {exc}")
+            return False
 
     @staticmethod
     def _suppress_watch_tool(req) -> None:
@@ -491,16 +521,21 @@ class BilibiliWatchPlugin(Star):
             return
 
         try:
-            session = await self._run_in_pool(self._qr_service.request_qrcode)
+            session = await self._run_in_pool(
+                self._qr_service.request_qrcode, PLUGIN_DATA_DIR / "qrcode"
+            )
         except Exception as exc:
             yield event.plain_result(f"申请登录二维码失败：{exc}")
             return
 
-        msg_chain = [
-            Plain("请使用【哔哩哔哩手机客户端】扫描下方二维码登录（180秒内有效）：\n"),
-            Image.fromURL(session.qr_image_url),
-            Plain(f"\n若图片无法显示，请直接在手机浏览器打开或扫描：\n{session.url}"),
+        msg_chain: list = [
+            Plain("请使用【哔哩哔哩手机客户端】扫描下方二维码登录（180秒内有效）：\n")
         ]
+        if session.qr_image_path:
+            msg_chain.append(Image.fromFileSystem(str(session.qr_image_path)))
+        else:
+            msg_chain.append(Plain("（本地未安装 qrcode 库，无法渲染二维码图片）\n"))
+        msg_chain.append(Plain(f"\n若图片无法显示，请直接在手机浏览器打开：\n{session.url}"))
         await event.send(MessageChain(msg_chain))
 
         # 启动后台异步轮询任务

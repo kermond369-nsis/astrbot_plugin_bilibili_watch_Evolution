@@ -57,6 +57,15 @@ class MediaExtractor:
         self._cached_ffmpeg = "ffmpeg"
         return self._cached_ffmpeg
 
+    @staticmethod
+    def _is_allowed_stream_url(url: str) -> bool:
+        """仅接受 B 站 playurl 接口下发的 http(s) 流地址。
+
+        ffmpeg 以参数列表调用（不经 shell），此处再做一层协议白名单，
+        避免把任意字符串当作输入源。
+        """
+        return isinstance(url, str) and url.startswith(("http://", "https://"))
+
     def extract_asr_audio(
         self,
         audio_stream_url: str,
@@ -70,6 +79,9 @@ class MediaExtractor:
         规格：单声道 (mono 1)、16kHz 采样率、32kbps 码率。
         5 分钟音频仅约 1.2MB，10 分钟音频约 2.4MB，远在 10MB 限制内。
         """
+        if not self._is_allowed_stream_url(audio_stream_url):
+            logger.warning("拒绝非 http(s) 的音频流地址，跳过抽轨")
+            return False
         output_mp3_path.parent.mkdir(parents=True, exist_ok=True)
         headers = f"Referer: {referer}\r\n"
         if user_agent:
@@ -114,6 +126,9 @@ class MediaExtractor:
         user_agent: str = "",
     ) -> list[tuple[Path, float]]:
         """截取多个关键时间点的单帧画面"""
+        if not self._is_allowed_stream_url(video_stream_url):
+            logger.warning("拒绝非 http(s) 的视频流地址，跳过截帧")
+            return []
         out_dir.mkdir(parents=True, exist_ok=True)
         headers = f"Referer: {referer}\r\n"
         if user_agent:

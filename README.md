@@ -133,7 +133,7 @@ services:
 插件加载成功时，日志会输出：
 
 ```text
-[B站之眼evolution] 插件已加载 (版本 1.1.2，智能清洗与双模门控模式)
+[B站之眼evolution] 插件已加载 (版本 1.1.3，智能清洗与双模门控模式)
 ```
 
 同时 AstrBot 会注册一个 LLM 工具：
@@ -254,6 +254,8 @@ Added llm tool: bilibili_watch
 | 扫码登录 / 已配 SESSDATA | 1080P（`qn=80`） | 稳定获取 CC/AI 字幕 |
 
 扫码流程：管理员发送 `/bili登录` → 手机 B 站 App 扫码确认 → 凭据写入 `<AstrBot>/data/plugin_data/astrbot_plugin_bilibili_watch/credentials.json` → 立即生效，无需重启。
+
+二维码在**本地渲染**（`qrcode` 库，写入插件数据目录），含 `qrcode_key` 的登录链接不会发送给任何第三方服务；若环境未安装 `qrcode` 库，则退化为只发送文本链接。
 
 > 建议使用**小号**登录。凭据以明文 JSON 保存在插件数据目录，请勿将 `data/` 提交到公开仓库。
 

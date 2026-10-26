@@ -6,7 +6,7 @@ desc: >-
   野生时间戳目录挖掘，弹幕高能波峰与梗词云提炼，dHash 关键帧去重，
   教程攻略与二次元切片双模自适应门控，无字幕时按需接入小米 MiMo / 硅基流动 ASR。
   纯工具属性优先，输出高信息密度的 Markdown 报告，拿不准的信息写入不确定项。
-version: 1.1.2
+version: 1.1.3
 author: kermond369-nsis
 repo: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution
 astrbot_version: ">=4.16,<5"
