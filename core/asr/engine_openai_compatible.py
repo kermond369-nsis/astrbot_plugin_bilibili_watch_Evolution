@@ -8,14 +8,12 @@
 from __future__ import annotations
 
 import json
-import logging
 import urllib.error
 import urllib.request
 import uuid
 
+from astrbot.api import logger
 from core.asr.base import ASRResult, BaseASREngine
-
-logger = logging.getLogger(__name__)
 
 
 class OpenAICompatibleASREngine(BaseASREngine):

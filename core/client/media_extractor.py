@@ -8,13 +8,12 @@
 
 from __future__ import annotations
 
-import logging
 import os
 import subprocess
 from pathlib import Path
 from typing import Sequence
 
-logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 
 class MediaExtractor:

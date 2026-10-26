@@ -29,6 +29,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import Image, Plain
 from astrbot.api.star import Context, Star
 from astrbot.core.message.message_event_result import MessageChain
+from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
 from core.auth.credential_manager import CredentialManager
 from core.auth.qr_login import BiliQrLoginService
@@ -53,8 +54,12 @@ from core.perception.prompt_builder import (
 from core.perception.session_store import SessionStore
 
 PLUGIN_NAME = "astrbot_plugin_bilibili_watch"
-PLUGIN_VERSION = "1.1.1"  # 与 metadata.yaml 保持一致
+PLUGIN_VERSION = "1.1.2"  # 与 metadata.yaml 保持一致
 LOG = "[B站之眼evolution]"
+
+# 运行时数据统一放在 AstrBot 标准插件数据目录：data/plugin_data/<插件名>
+# （凭据、ASR 缓存音频、关键帧截图都写到这里，便于用户备份/迁移/审计）
+PLUGIN_DATA_DIR = Path(get_astrbot_plugin_data_path()) / PLUGIN_NAME
 
 
 @dataclass
@@ -70,7 +75,8 @@ class BilibiliWatchPlugin(Star):
         super().__init__(context)
         # 统一分层配置读取：WebUI 传入 > 本地 config.json > 环境变量
         self.cfg = AppConfig.load(PLUGIN_DIR, config)
-        self._cred_manager = CredentialManager(PLUGIN_DIR / "data")
+        PLUGIN_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        self._cred_manager = CredentialManager(PLUGIN_DATA_DIR)
         self._qr_service = BiliQrLoginService()
         self._session_store = SessionStore(ttl_seconds=1800)
         self._active_jobs: dict[str, ActiveJob] = {}
@@ -310,7 +316,7 @@ class BilibiliWatchPlugin(Star):
             try:
                 _v_url, a_url = await self._run_in_pool(client.get_stream_urls, meta.bvid, meta.cid)
                 if a_url:
-                    tmp_mp3 = Path(PLUGIN_DIR) / "data" / "cache" / f"asr_{meta.bvid}.mp3"
+                    tmp_mp3 = PLUGIN_DATA_DIR / "cache" / f"asr_{meta.bvid}.mp3"
                     ok = await self._run_in_pool(
                         self._media_extractor.extract_asr_audio, a_url, tmp_mp3, min(meta.duration, 300)
                     )
@@ -340,7 +346,7 @@ class BilibiliWatchPlugin(Star):
             job.stage = "关键帧截图与感知去重"
             v_url, _ = await self._run_in_pool(client.get_stream_urls, meta.bvid, meta.cid)
             if v_url:
-                out_dir = Path(PLUGIN_DIR) / "data" / "frames" / meta.bvid
+                out_dir = PLUGIN_DATA_DIR / "frames" / meta.bvid
                 raw_frames = await self._run_in_pool(
                     self._media_extractor.extract_frames,
                     v_url,

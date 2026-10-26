@@ -15,7 +15,6 @@ import gzip
 import hashlib
 import http.client
 import json
-import logging
 import math
 import random
 import re
@@ -30,9 +29,8 @@ import zlib
 from dataclasses import dataclass
 from typing import Any
 
+from astrbot.api import logger
 from core.models import RawComment, RawDanmakuItem, RawSubtitleItem, RawVideoMeta
-
-logger = logging.getLogger(__name__)
 
 MIXIN_KEY_ENC_TAB = [
     46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49,

@@ -11,14 +11,13 @@ from __future__ import annotations
 import http.client
 import http.cookiejar
 import json
-import logging
 import re
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
-logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 QR_GENERATE_URL = "https://passport.bilibili.com/x/passport-login/web/qrcode/generate"
 QR_POLL_URL = "https://passport.bilibili.com/x/passport-login/web/qrcode/poll"

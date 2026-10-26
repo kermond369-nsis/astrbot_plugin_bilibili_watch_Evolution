@@ -1,4 +1,8 @@
-"""ASR 模块与清洗离线/连通性单元测试。"""
+"""ASR 模块与清洗离线/连通性单元测试。
+
+离线部分只依赖清洗器；MiMo 连通性测试在函数内延迟导入
+（`core.asr.engine_mimo` 依赖 astrbot.api.logger，离线环境不导入）。
+"""
 
 import sys
 from pathlib import Path
@@ -7,7 +11,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.asr.engine_mimo import MimoASREngine
 from core.cleaner.asr_cleaner import clean_asr_transcript, convert_asr_text_to_subtitles
 
 
@@ -41,6 +44,8 @@ def test_asr_text_to_subtitles():
 
 def test_mimo_connectivity(api_key: str):
     print(">>> [ASR 测试 3] 小米 MiMo ASR 真实网络连通性校验...")
+    from core.asr.engine_mimo import MimoASREngine  # 延迟导入：需要 astrbot 环境
+
     # 构造一个合法的超微型 WAV 音频头部 (44 字节 PCM 静音)
     # 结构: RIFF header + fmt chunk + data chunk (空数据)
     wav_header = bytes([

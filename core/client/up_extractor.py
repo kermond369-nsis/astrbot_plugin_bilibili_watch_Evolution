@@ -5,14 +5,12 @@
 
 from __future__ import annotations
 
-import logging
 import re
 from dataclasses import dataclass
 from typing import Any
 
+from astrbot.api import logger
 from core.client.bili_client import BiliClient
-
-logger = logging.getLogger(__name__)
 
 UID_QUERY_RE = re.compile(r"(?i)^\s*(?:uid)?\s*[:：]?\s*(\d+)\s*$")
 SPACE_RE = re.compile(r"space\.bilibili\.com/(\d+)")

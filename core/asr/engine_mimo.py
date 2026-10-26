@@ -8,13 +8,11 @@ from __future__ import annotations
 
 import base64
 import json
-import logging
 import urllib.error
 import urllib.request
 
+from astrbot.api import logger
 from core.asr.base import ASRResult, BaseASREngine
-
-logger = logging.getLogger(__name__)
 
 
 class MimoASREngine(BaseASREngine):

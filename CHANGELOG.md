@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-10-23
+
+### 修复
+
+- **日志记录规范**：`core/client/`、`core/auth/`、`core/asr/` 下 7 个模块统一改用 `from astrbot.api import logger`，移除内置 `logging`，满足插件商店审查要求。
+- **数据持久化规范**：扫码凭据、ASR 临时音频与关键帧截图由插件目录 `data/` 迁移至 AstrBot 标准插件数据目录 `data/plugin_data/astrbot_plugin_bilibili_watch/`，便于用户备份、迁移与审计；文档中的路径说明同步更新。
+
 ## [1.1.1] - 2026-10-23
 
 ### 文档
@@ -30,7 +37,8 @@
 
 - 首次公开版本：双模门控、文本/弹幕/字幕/评论清洗、dHash 关键帧去重、MiMo / SiliconFlow ASR、30 分钟会话记忆、扫码登录解锁 1080P、每日配额与会话冷却、`bilibili_watch` LLM 工具。
 
-[Unreleased]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/compare/v1.1.2...HEAD
 [1.1.1]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/releases/tag/v1.1.1
+[1.1.2]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/releases/tag/v1.1.2
 [1.1.0]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/releases/tag/v1.1.0
 [1.0.0]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/releases/tag/v1.0.0

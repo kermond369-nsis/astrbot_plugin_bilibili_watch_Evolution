@@ -133,7 +133,7 @@ services:
 插件加载成功时，日志会输出：
 
 ```text
-[B站之眼evolution] 插件已加载 (版本 1.1.0，智能清洗与双模门控模式)
+[B站之眼evolution] 插件已加载 (版本 1.1.2，智能清洗与双模门控模式)
 ```
 
 同时 AstrBot 会注册一个 LLM 工具：
@@ -253,7 +253,7 @@ Added llm tool: bilibili_watch
 | 游客态 | 360P / 480P | 易触发 `-101`、`-352` 风控 |
 | 扫码登录 / 已配 SESSDATA | 1080P（`qn=80`） | 稳定获取 CC/AI 字幕 |
 
-扫码流程：管理员发送 `/bili登录` → 手机 B 站 App 扫码确认 → 凭据写入 `<插件目录>/data/credentials.json` → 立即生效，无需重启。
+扫码流程：管理员发送 `/bili登录` → 手机 B 站 App 扫码确认 → 凭据写入 `<AstrBot>/data/plugin_data/astrbot_plugin_bilibili_watch/credentials.json` → 立即生效，无需重启。
 
 > 建议使用**小号**登录。凭据以明文 JSON 保存在插件数据目录，请勿将 `data/` 提交到公开仓库。
 
@@ -355,7 +355,7 @@ AstrBot 的 t2i 是独立渲染器，与本插件无关：
 
 ## 隐私与安全
 
-- **凭据存储**：扫码登录的 SESSDATA 等写入 `<插件目录>/data/credentials.json`（明文 JSON），仅本机可读；`/bili注销` 可随时清除。
+- **凭据存储**：扫码登录的 SESSDATA 等写入 `<AstrBot>/data/plugin_data/astrbot_plugin_bilibili_watch/credentials.json`（明文 JSON），仅本机可读；`/bili注销` 可随时清除。
 - **不外传**：插件的网络请求只发往 B 站 API 与你配置的 ASR 服务商；无遥测、无统计上报。
 - **日志**：日志中不打印凭据与 Key；但错误堆栈可能包含 URL（含公开参数）。
 - **仓库卫生**：`config.json`、`data/`、`credentials.json`、`*.key`、`.env` 已在 `.gitignore` 中忽略。

@@ -22,10 +22,10 @@
 
 | 数据 | 存放位置 | 说明 |
 | --- | --- | --- |
-| B 站 SESSDATA / 扫码凭据 | `<插件目录>/data/credentials.json` | 明文 JSON，权限由文件系统决定；`/bili注销` 可清除 |
+| B 站 SESSDATA / 扫码凭据 | `<AstrBot>/data/plugin_data/astrbot_plugin_bilibili_watch/credentials.json` | 明文 JSON，权限由文件系统决定；`/bili注销` 可清除 |
 | 配置中的 API Key | AstrBot 插件配置或 `config.json` | 由 AstrBot 配置系统或文件权限保护 |
 | 视频元数据/字幕/弹幕 | 内存（30 分钟会话记忆） | 不落盘，进程重启即清空 |
-| 关键帧截图 | `<插件目录>/data/frames/` | 临时文件，可随时删除 |
+| 关键帧截图 | `<AstrBot>/data/plugin_data/astrbot_plugin_bilibili_watch/frames/` | 临时文件，可随时删除 |
 
 ## 已知边界与建议
 
