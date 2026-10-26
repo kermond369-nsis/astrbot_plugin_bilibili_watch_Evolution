@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [1.1.4] - 2026-10-26
+
+### 元数据
+
+- 按插件市场模板完善 `metadata.yaml`：新增 `category: entertainment`、`social_link`，并把 `tags` 扩充为 B站 / bilibili / 视频总结 / 视频理解 / 弹幕 / 多模态 / ASR / LLM，便于市场分类与搜索。
+
 ## [1.1.3] - 2026-10-26
 
 ### 改进
@@ -45,7 +51,8 @@
 
 - 首次公开版本：双模门控、文本/弹幕/字幕/评论清洗、dHash 关键帧去重、MiMo / SiliconFlow ASR、30 分钟会话记忆、扫码登录解锁 1080P、每日配额与会话冷却、`bilibili_watch` LLM 工具。
 
-[Unreleased]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/compare/v1.1.3...HEAD
+[Unreleased]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/compare/v1.1.4...HEAD
+[1.1.4]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/releases/tag/v1.1.4
 [1.1.3]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/releases/tag/v1.1.3
 [1.1.2]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/releases/tag/v1.1.2
 [1.1.1]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/releases/tag/v1.1.1
