@@ -1,15 +1,18 @@
 """门控路由引擎（Gating & Routing System）。
 
-根据清洗提纯后的 CleanedVideoBundle 特征（字幕覆盖率、时间戳目录、弹幕高能点、时长），
+根据清洗提纯后的 CleanedVideoBundle 特征（字幕覆盖率、时间戳目录、弹幕高能点、时长、是否游戏实况），
 做出自适应执行规划（GatingPlan）：
-1. 模式 A (TEXT_OUTLINE): 教程/攻略/长口播视频 -> 纯文本总结，跳过截帧，秒级响应，零视觉Token消耗；
+1. 模式 A (TEXT_OUTLINE): 教程/攻略/长口播视频 -> 纯文本总结，跳过截帧，秒级响应，零视觉 Token 消耗；
 2. 模式 B (VISUAL_MEME): 二次元切片/手书/MMD/无字幕梗 -> 弹幕热点+视觉关键帧，子代理多模态观察；
-3. 模式 C (HYBRID): 复杂长视频 -> 混合抽样。
+3. 游戏实况分支：在视觉模式基础上额外生成底栏 HUD 时间带，供模型读费用/技能卡/血量变化。
 """
 
 from __future__ import annotations
 
+from core.media.frame_plan import plan_frame_count
 from core.models import CleanedVideoBundle, GatingPlan, ProcessingMode
+
+GAMEPLAY_MAX_DURATION_FOR_HUD = 1800  # 超过 30 分钟不做 HUD 密集采样（解码成本过高）
 
 
 class GatingRouter:
@@ -38,7 +41,32 @@ class GatingRouter:
                 system_prompt_type="tutorial_outline",
             )
 
-        # 2. 字幕密度足够高（且时长在合理区间）-> 知识讲解/教程/剧情口播
+        # 2. 游戏实况/攻略：即使字幕很足，操作轴也必须看画面，优先走视觉 + HUD
+        if getattr(bundle, "gameplay", False):
+            count = plan_frame_count(
+                duration,
+                bundle.total_subtitle_words,
+                bundle.has_outline,
+                gameplay=True,
+            )
+            frame_timestamps = self._plan_frame_timestamps(bundle, count)
+            need_hud = duration <= GAMEPLAY_MAX_DURATION_FOR_HUD
+            return GatingPlan(
+                mode=ProcessingMode.VISUAL_MEME,
+                reason=(
+                    f"识别为游戏实况/攻略（{duration}s，字幕 {bundle.total_subtitle_words} 字），"
+                    f"启用 {count} 帧场景证据" + ("+底栏 HUD 时间带" if need_hud else "")
+                ),
+                need_frames=True,
+                target_frame_count=count,
+                target_frame_timestamps=frame_timestamps,
+                system_prompt_type="gameplay",
+                gameplay=True,
+                need_hud=need_hud,
+                hud_max_sheets=6,
+            )
+
+        # 3. 字幕密度足够高（且时长在合理区间）-> 知识讲解/教程/剧情口播
         if words_per_minute >= self.min_wpm_text and duration > 60:
             return GatingPlan(
                 mode=ProcessingMode.TEXT_OUTLINE,
@@ -48,9 +76,13 @@ class GatingRouter:
                 system_prompt_type="speech_knowledge",
             )
 
-        # 3. 画面与弹幕主导：二次元切片/手书/无字幕/台词碎
+        # 4. 画面与弹幕主导：二次元切片/手书/无字幕/台词碎
         # 规划目标截帧时间点：弹幕高能波峰时间点优先
-        frame_timestamps = self._plan_frame_timestamps(bundle, self.default_meme_frame_count)
+        count = max(
+            self.default_meme_frame_count,
+            plan_frame_count(duration, bundle.total_subtitle_words, bundle.has_outline),
+        )
+        frame_timestamps = self._plan_frame_timestamps(bundle, count)
 
         return GatingPlan(
             mode=ProcessingMode.VISUAL_MEME,
@@ -62,7 +94,7 @@ class GatingRouter:
         )
 
     def _plan_frame_timestamps(self, bundle: CleanedVideoBundle, count: int) -> list[float]:
-        """规划截帧时间戳：
+        """规划截帧时间戳（采样器不可用时的保底方案）：
 
         1. 优先采用弹幕高能波峰点（观众情绪最浓烈的时刻）；
         2. 结合目录时间点；

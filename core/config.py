@@ -27,9 +27,20 @@ class AppConfig:
     siliconflow_api_key: str = ""
     siliconflow_base_url: str = "https://api.siliconflow.cn/v1"
     siliconflow_model: str = "FunAudioLLM/SenseVoiceSmall"
+    asr_max_seconds: int = 1800      # 单视频最多转录多少秒
+    asr_chunk_seconds: int = 300     # 单块音频长度，避免超过 STT 大小限制
 
     # 视觉子代理配置
     vision_provider_id: str = ""
+
+    # 游戏实况判定：auto | on | off
+    gameplay_mode: str = "auto"
+
+    # 画面证据
+    frame_budget_cap: int = 36       # 场景联表最多多少帧
+    hud_sheet_max: int = 6           # 操作栏时间带最多几张
+    keep_frame_dirs: int = 6         # 保留最近多少个视频的帧缓存
+    transcript_ttl_hours: int = 72   # 字幕/ASR 原文缓存保留小时数
 
     # FFmpeg 路径
     ffmpeg_path: str = ""
@@ -93,7 +104,14 @@ class AppConfig:
             siliconflow_api_key=str(data.get("siliconflow_api_key", "")).strip(),
             siliconflow_base_url=str(data.get("siliconflow_base_url", "https://api.siliconflow.cn/v1")).strip(),
             siliconflow_model=str(data.get("siliconflow_model", "FunAudioLLM/SenseVoiceSmall")).strip(),
+            asr_max_seconds=int(data.get("asr_max_seconds", 1800)),
+            asr_chunk_seconds=int(data.get("asr_chunk_seconds", 300)),
             vision_provider_id=str(data.get("vision_provider_id", "")).strip(),
+            gameplay_mode=str(data.get("gameplay_mode", "auto")).strip().lower(),
+            frame_budget_cap=int(data.get("frame_budget_cap", 36)),
+            hud_sheet_max=int(data.get("hud_sheet_max", 6)),
+            keep_frame_dirs=int(data.get("keep_frame_dirs", 6)),
+            transcript_ttl_hours=int(data.get("transcript_ttl_hours", 72)),
             ffmpeg_path=str(data.get("ffmpeg_path", "")).strip(),
             user_daily_quota=int(data.get("user_daily_quota", 20)),
             quota_exempt_admins=bool(data.get("quota_exempt_admins", True)),

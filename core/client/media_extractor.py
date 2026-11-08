@@ -13,7 +13,12 @@ import subprocess
 from pathlib import Path
 from typing import Sequence
 
-from astrbot.api import logger
+try:  # 允许在无 AstrBot 运行时的离线环境里单测
+    from astrbot.api import logger
+except Exception:  # pragma: no cover
+    import logging
+
+    logger = logging.getLogger("bilibili_watch")
 
 
 class MediaExtractor:
@@ -71,13 +76,17 @@ class MediaExtractor:
         audio_stream_url: str,
         output_mp3_path: Path,
         max_duration_seconds: int = 600,
+        start_seconds: float = 0.0,
         referer: str = "https://www.bilibili.com/",
         user_agent: str = "",
+        cookie: str = "",
     ) -> bool:
         """从 B 站 Dash 音频流中提取经过极致压缩的轻量音频（供 ASR 上传使用）。
 
         规格：单声道 (mono 1)、16kHz 采样率、32kbps 码率。
         5 分钟音频仅约 1.2MB，10 分钟音频约 2.4MB，远在 10MB 限制内。
+
+        start_seconds 用于长音频分块：每块独立 seek，避免整段超限。
         """
         if not self._is_allowed_stream_url(audio_stream_url):
             logger.warning("拒绝非 http(s) 的音频流地址，跳过抽轨")
@@ -86,6 +95,8 @@ class MediaExtractor:
         headers = f"Referer: {referer}\r\n"
         if user_agent:
             headers += f"User-Agent: {user_agent}\r\n"
+        if cookie:
+            headers += f"Cookie: {cookie}\r\n"
 
         cmd = [
             self.get_ffmpeg_exe(),
@@ -94,6 +105,10 @@ class MediaExtractor:
             "error",
             "-headers",
             headers,
+        ]
+        if start_seconds > 0:
+            cmd += ["-ss", f"{start_seconds:.2f}"]
+        cmd += [
             "-i",
             audio_stream_url,
             "-t",
@@ -110,7 +125,7 @@ class MediaExtractor:
         ]
 
         try:
-            subprocess.run(cmd, check=True, capture_output=True, timeout=60)
+            subprocess.run(cmd, check=True, capture_output=True, timeout=90)
             return output_mp3_path.exists() and output_mp3_path.stat().st_size > 0
         except Exception as exc:
             logger.error(f"提取 ASR 音频流失败: {exc}")
@@ -124,8 +139,9 @@ class MediaExtractor:
         height: int = 480,
         referer: str = "https://www.bilibili.com/",
         user_agent: str = "",
+        cookie: str = "",
     ) -> list[tuple[Path, float]]:
-        """截取多个关键时间点的单帧画面"""
+        """截取多个关键时间点的单帧画面。height<=0 表示保留原始分辨率。"""
         if not self._is_allowed_stream_url(video_stream_url):
             logger.warning("拒绝非 http(s) 的视频流地址，跳过截帧")
             return []
@@ -133,6 +149,8 @@ class MediaExtractor:
         headers = f"Referer: {referer}\r\n"
         if user_agent:
             headers += f"User-Agent: {user_agent}\r\n"
+        if cookie:
+            headers += f"Cookie: {cookie}\r\n"
 
         extracted: list[tuple[Path, float]] = []
 
@@ -151,8 +169,10 @@ class MediaExtractor:
                 video_stream_url,
                 "-frames:v",
                 "1",
-                "-vf",
-                f"scale=-2:{height}",
+            ]
+            if height and height > 0:
+                cmd += ["-vf", f"scale=-2:{height}"]
+            cmd += [
                 "-q:v",
                 "3",
                 "-y",

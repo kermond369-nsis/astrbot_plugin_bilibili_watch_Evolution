@@ -39,6 +39,9 @@ class RawVideoMeta:
     pubdate: int   # 时间戳
     page: int = 1
     page_count: int = 1
+    # 分区与标签（用于游戏实况识别、字幕可信度交叉校验）
+    tname: str = ""
+    tags: list[str] = field(default_factory=list)
     # 统计数据
     views: int = 0
     danmaku: int = 0
@@ -70,11 +73,47 @@ class RawSubtitleItem:
 
 
 @dataclass
+class SubtitleTrack:
+    """一次字幕抓取的完整结果（含来源，便于判断可信度）。"""
+
+    items: list[RawSubtitleItem] = field(default_factory=list)
+    source: str = "none"  # official | ai | none
+    lang: str = ""
+    lang_doc: str = ""
+    error: str = ""
+
+    @property
+    def is_ai(self) -> bool:
+        return self.source == "ai"
+
+    @property
+    def ok(self) -> bool:
+        return bool(self.items)
+
+
+@dataclass
+class SubtitleTrust:
+    """字幕可信度评估结果。"""
+
+    level: str = "none"  # official | ok | weak | suspect | none
+    reasons: list[str] = field(default_factory=list)
+    entity_hits: list[str] = field(default_factory=list)
+
+    @property
+    def usable(self) -> bool:
+        return self.level in ("official", "ok", "weak")
+
+    def note(self) -> str:
+        return "；".join(self.reasons) if self.reasons else "无额外说明"
+
+
+@dataclass
 class RawDanmakuItem:
     """原始单条弹幕"""
 
     time_point: float  # 出现时间点（秒）
     text: str          # 弹幕内容
+
 
 
 # =====================================================================
@@ -110,6 +149,16 @@ class HighEnergyPoint:
 
 
 @dataclass
+class CommentEvidence:
+    """评论区里值得直接交给分析模型的原文证据。"""
+
+    uname: str
+    like: int
+    content: str
+    reason: str = ""  # 命中原因：文字轴 / 时间戳 / 数据密度
+
+
+@dataclass
 class CleanedVideoBundle:
     """标准化清洗后交付给门控与分析引擎的纯净数据集"""
 
@@ -120,11 +169,17 @@ class CleanedVideoBundle:
     pinned_comment: RawComment | None       # UP主置顶评论（含补充说明/配装表）
     curated_comments: list[str]             # 精选代表性观众观点（去广、去复读）
     high_energy_points: list[HighEnergyPoint]# 提纯后的弹幕高能点与梗词云
-    
+
     # 辅助统计指标（供门控路由使用）
     subtitle_coverage_ratio: float = 0.0    # 字幕覆盖视频时长的比例 (0.0~1.0)
     has_outline: bool = False               # 是否成功提取到了结构化时间戳目录
     total_subtitle_words: int = 0           # 字幕总有效字数
+
+    # 证据可信度与评论区高信息原文（新增）
+    subtitle_track: SubtitleTrack | None = None
+    subtitle_trust: SubtitleTrust | None = None
+    axis_comments: list[CommentEvidence] = field(default_factory=list)
+    gameplay: bool = False                  # 是否判定为游戏实况/攻略
 
 
 # =====================================================================
@@ -142,3 +197,7 @@ class GatingPlan:
     target_frame_count: int = 0
     target_frame_timestamps: list[float] = field(default_factory=list)
     system_prompt_type: str = "default"
+    # 游戏实况：额外生成底栏 HUD 时间带，供模型读费用/技能卡/血量变化
+    gameplay: bool = False
+    need_hud: bool = False
+    hud_max_sheets: int = 6

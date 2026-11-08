@@ -18,7 +18,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from astrbot.api import logger
+try:  # 允许在无 AstrBot 运行时的离线环境里单测
+    from astrbot.api import logger
+except Exception:  # pragma: no cover
+    import logging
+
+    logger = logging.getLogger("bilibili_watch")
 
 QR_GENERATE_URL = "https://passport.bilibili.com/x/passport-login/web/qrcode/generate"
 QR_POLL_URL = "https://passport.bilibili.com/x/passport-login/web/qrcode/poll"
@@ -41,7 +46,8 @@ def render_qr_png(data: str, out_dir: Path) -> Path | None:
 
     - 不调用任何第三方二维码服务，含 qrcode_key 的登录链接不会离开本机；
     - 依赖可选的 ``qrcode`` 库（AstrBot 常见环境已自带）；缺失时返回 None，
-      由调用方退化为「只发文本链接」。
+      由调用方退化为「只发文本链接」；
+    - 文件名带链接哈希，避免并发扫码时互相覆盖。
     """
     try:
         import qrcode  # type: ignore[import-not-found]
@@ -49,8 +55,11 @@ def render_qr_png(data: str, out_dir: Path) -> Path | None:
         logger.warning("未安装 qrcode 库，扫码登录仅提供文本链接（不会调用第三方服务）")
         return None
     try:
+        import hashlib
+
         out_dir.mkdir(parents=True, exist_ok=True)
-        path = out_dir / "login_qr.png"
+        digest = hashlib.sha1(data.encode("utf-8")).hexdigest()[:10]
+        path = out_dir / f"login_qr_{digest}.png"
         qrcode.make(data).save(path)
         return path
     except Exception as exc:

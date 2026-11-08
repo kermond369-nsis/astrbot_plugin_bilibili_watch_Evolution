@@ -27,11 +27,36 @@
     "secret": true,
     "hint": "仅 asr_provider=siliconflow 时生效，驱动 SenseVoiceSmall 多语言转录，国内直连 https://api.siliconflow.cn/v1。"
   },
+  "mimo_base_url": {
+    "type": "string",
+    "description": "MiMo 接口地址",
+    "default": "https://api.xiaomimimo.com/v1",
+    "hint": "一般无需修改；自建代理或兼容接口时才改。"
+  },
+  "siliconflow_base_url": {
+    "type": "string",
+    "description": "硅基流动接口地址",
+    "default": "https://api.siliconflow.cn/v1",
+    "hint": "一般无需修改；自建代理或兼容接口时才改。"
+  },
+  "siliconflow_model": {
+    "type": "string",
+    "description": "硅基流动模型名",
+    "default": "FunAudioLLM/SenseVoiceSmall",
+    "hint": "默认 SenseVoiceSmall；换成其它兼容音频模型时需保证接口协议一致。"
+  },
   "vision_provider_id": {
     "type": "string",
     "description": "视觉子代理模型 ID",
     "default": "",
-    "hint": "负责看关键帧截图的模型 Provider ID，例如 xiaomi/mimo-v2.6-flash。留空则跟随当前会话主模型；主模型不支持图片时视觉模式会降级为空报告。"
+    "hint": "留空跟随 AstrBot 全局默认对话模型（不是当前会话模型）；填写 Provider ID 可强制指定，例如 xiaomi/mimo-v2.6-flash。"
+  },
+  "gameplay_mode": {
+    "type": "string",
+    "description": "游戏实况判定",
+    "options": ["auto", "on", "off"],
+    "default": "auto",
+    "hint": "auto=按标题/标签/分区自动识别；on=所有视频都按游戏实况生成底栏 HUD 时间带；off=关闭游戏分支。"
   },
   "ffmpeg_path": {
     "type": "string",
@@ -74,5 +99,41 @@
     "description": "催更时提示进度",
     "default": true,
     "hint": "观看期间群友再次催促时，回复已耗时与当前阶段；/stop、/reset、/new、/help 仍会正常放行。"
+  },
+  "asr_max_seconds": {
+    "type": "int",
+    "description": "ASR 最长秒数",
+    "default": 1800,
+    "hint": "单个视频最多转录多少秒音频；长视频按块转录，默认 30 分钟封顶，避免费用失控。"
+  },
+  "asr_chunk_seconds": {
+    "type": "int",
+    "description": "ASR 分块秒数",
+    "default": 300,
+    "hint": "每块音频长度。MiMo 等接口对单次上传有大小限制，5 分钟一块最稳；失败块不影响其它块。"
+  },
+  "frame_budget_cap": {
+    "type": "int",
+    "description": "场景帧上限",
+    "default": 36,
+    "hint": "场景联表最多抽多少帧。游戏实况会按片长自动加权，超过此值截断。"
+  },
+  "hud_sheet_max": {
+    "type": "int",
+    "description": "HUD 时间带张数",
+    "default": 6,
+    "hint": "游戏实况底部操作栏时间带最多生成几张（每张 32 格）。张数越多覆盖越全，视觉 token 也越多。"
+  },
+  "keep_frame_dirs": {
+    "type": "int",
+    "description": "帧缓存保留数",
+    "default": 6,
+    "hint": "保留最近多少个视频的截图缓存；超出后自动清理最旧的目录。"
+  },
+  "transcript_ttl_hours": {
+    "type": "int",
+    "description": "原文缓存小时",
+    "default": 72,
+    "hint": "字幕/ASR 原文在磁盘保留多少小时，供 bilibili_transcript 二次查询；过期自动清理。"
   }
 }

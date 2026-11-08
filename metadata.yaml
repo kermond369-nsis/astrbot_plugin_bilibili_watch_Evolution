@@ -1,12 +1,14 @@
 name: astrbot_plugin_bilibili_watch
-display_name: B站之眼 evolution
-short_desc: 智能清洗与双模门控的 B 站视频理解插件（教程秒级提炼 / 二次元高能截帧 / ASR 补全）
+display_name: 逐渐完善的预知眼
+short_desc: 智能清洗与画面证据链的 B 站视频理解插件（教程秒级提炼 / 游戏操作轴 / ASR 补全）
 desc: >-
   把一条 B 站链接变成客观、结构化的内容报告：元数据/字幕/弹幕/评论深度清洗，
-  野生时间戳目录挖掘，弹幕高能波峰与梗词云提炼，dHash 关键帧去重，
-  教程攻略与二次元切片双模自适应门控，无字幕时按需接入小米 MiMo / 硅基流动 ASR。
+  野生时间戳目录挖掘，弹幕高能波峰与梗词云提炼，字幕可信度校验，
+  教程攻略/二次元切片/完整游戏实况自适应门控；游戏实况额外生成底栏操作栏时间带，
+  按「画面可复核 / 观众提供 / 推断」三档证据还原操作轴，无字幕时按需接入 ASR。
+  提供可视化设置页：扫码登录、全部配置、缓存清理与运行诊断。
   纯工具属性优先，输出高信息密度的 Markdown 报告，拿不准的信息写入不确定项。
-version: 1.1.4
+version: 1.4.0
 author: kermond369-nsis
 repo: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution
 astrbot_version: ">=4.16,<5"
@@ -20,6 +22,8 @@ tags:
   - bilibili
   - 视频总结
   - 视频理解
+  - 游戏实况
+  - 操作轴
   - 弹幕
   - 多模态
   - ASR

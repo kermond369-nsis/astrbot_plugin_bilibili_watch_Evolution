@@ -4,11 +4,21 @@
   "mimo_api_key": "",
   "siliconflow_api_key": "",
   "vision_provider_id": "",
+  "gameplay_mode": "auto",
+  "mimo_base_url": "https://api.xiaomimimo.com/v1",
+  "siliconflow_base_url": "https://api.siliconflow.cn/v1",
+  "siliconflow_model": "FunAudioLLM/SenseVoiceSmall",
   "ffmpeg_path": "",
   "user_daily_quota": 20,
   "quota_exempt_admins": true,
   "cooldown_seconds": 15,
   "ack_enabled": true,
   "ack_template": "我去看看这个视频，稍等一下～",
-  "wait_notice_enabled": true
+  "wait_notice_enabled": true,
+  "asr_max_seconds": 1800,
+  "asr_chunk_seconds": 300,
+  "frame_budget_cap": 36,
+  "hud_sheet_max": 6,
+  "keep_frame_dirs": 6,
+  "transcript_ttl_hours": 72
 }

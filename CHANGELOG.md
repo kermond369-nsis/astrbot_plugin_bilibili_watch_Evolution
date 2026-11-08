@@ -4,6 +4,145 @@
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-07
+
+品牌与配置跟随修正。
+
+### 变更
+
+- **项目显示名改为「逐渐完善的预知眼」**：插件卡片、WebUI 视图标题、页面品牌、日志前缀、
+  README/CONTRIBUTING 全部更新；内部插件 ID 仍保留 `astrbot_plugin_bilibili_watch`，
+  避免配置路径、数据目录、Web API 路由与升级链路迁移。
+- **视觉子代理默认跟随 AstrBot 全局默认对话模型**：此前留空 `vision_provider_id` 时取的是
+  「当前会话 Provider」；现在改为 `context.get_using_provider_async()` 不带 umo，取全局默认模型
+  （全局不可用时才回退会话模型），并在日志中打印实际使用的 Provider。
+  设置页/配置 schema 的提示同步改为「跟随全局默认」；概览页显示实际生效的全局模型名。
+- **登录账号卡显示 B 站头像**：后端从 `nav` 的 `face` 下载头像并转 data URL 返回，
+  前端显示真实头像；下载失败时回退首字母，避免防盗链/CSP 导致的空白。
+- 设置页视图标题改为插件名「逐渐完善的预知眼」，不再只显示「设置」。
+
+## [1.3.0] - 2026-11-07
+
+本版新增**可视化设置页**：不移植参考项目的管理页，而是按 AstrBot 官方 Plugin Views 文档重新设计，
+把扫码登录、全部配置项、缓存清理与运行诊断收进一个页面。
+
+### 新增：可视化设置页（`views/settings`）
+
+- 基于 AstrBot `views/<name>/index.html` + `window.AstrBotPluginView` bridge；
+  后端用 `context.register_web_api()` 注册 12 个接口，handler 走 `astrbot.api.web`（旧运行时回退 Quart）。
+- 六个配置分组、22 个字段：连接与登录、模型与实况、ASR、画面证据、交互与频控、缓存与原文。
+  字段规格在 `core/web/spec.py` 中与 `_conf_schema.json` 同源校验，页面不会和真实配置漂移。
+- 支持白名单校验、类型/范围/枚举检查、密钥「留空保持 / 显式清除」、分组恢复默认、脏状态提示、Ctrl+S 保存。
+- 保存直接写 AstrBot 的 `AstrBotConfig`（`save_config_async`），随后热重载 `AppConfig`、
+  `MediaExtractor` 与原文缓存 TTL，无需重启；非 AstrBot 环境下回退写插件目录 `config.json`。
+- 新增「概览」「缓存」「诊断」三个页面：运行状态卡片、最近观看、缓存占用条与分类清理、
+  Python/平台/FFmpeg/已注册接口等诊断信息。
+- 亮/暗主题跟随 AstrBot；视图标题与描述写入 `.astrbot-plugin/i18n/{zh-CN,en-US}.json`。
+
+### 新增：扫码登录进入设置页
+
+- 页面内生成二维码（本地 `qrcode` 渲染，链接不出本机）、2.5 秒轮询扫码状态、倒计时、
+  刷新二维码、登录后展示昵称/UID/等级/大会员、退出登录。
+- 二维码文件名改为按链接哈希命名，避免并发扫码互相覆盖；读取后立即删除 PNG。
+- 新增 `requirements.txt`（`qrcode>=7.4`），AstrBot 安装插件时自动安装；本地缺库时页面与
+  `/bili登录` 都降级为只显示登录链接，不会调用第三方二维码服务。
+- 登录成功后凭据写入原有 `CredentialManager`，优先于设置页手填的 SESSDATA；退出后自动回退。
+
+### 新增：配置项
+
+- `gameplay_mode`：auto / on / off，控制游戏实况判定；关闭后不再生成 HUD 时间带。
+- `mimo_base_url`、`siliconflow_base_url`、`siliconflow_model` 进入配置面板（此前只能写 config.json / 环境变量）。
+- 设置页保存后 `gameplay_mode` 立即对下一次分析生效。
+
+### 其他
+
+- `SessionStore.list_recent()`：设置页「最近观看」数据源，只返回标题/BV/类型/时间，不返回正文。
+- 缓存清理会避开 `credentials.json`，并在有任务进行中时拒绝清理截图缓存。
+- 新增 `tests/test_web.py`（字段与 schema 一致性、校验、脱敏、缓存安全清理）并接入 CI。
+- 设置页在 AstrBot 不支持 `register_web_api` 时只记录警告，不影响插件主体加载。
+
+### 已知限制
+
+- `views/` 需要较新的 AstrBot（Plugin Views 文档对应 2026 年版本）；很旧的 4.x 只能看到插件配置面板。
+- 设置页的保存权限等同于 Dashboard 登录权限；多人共用 Dashboard 时请自行限制账号。
+- 页面未做多语言正文，仅视图标题/描述提供 zh-CN / en-US。
+
+## [1.2.0] - 2026-11-07
+
+本版重点：**完整游戏视频的操作轴与画面证据**，以及从参考项目 `AcceleratorYue/astrbot_plugin_bilibili_eyes`
+v0.7.0–v0.12.2 中筛选移植的分析能力（情感/人格化回复部分按要求排除）。
+
+### 修复：完整游戏视频「操作轴」乱说、关键帧无作用
+
+根因（均已复现）：
+
+- 旧流程按 8 个均匀时间点**逐张起 ffmpeg 进程重新连流 seek**，374 秒的视频只覆盖 8 个瞬间；
+- `get_stream_urls` 按 height 升序取第一个 ≥360 的流，**登录后反而恒选 360P**；
+- 截帧统一缩到 480P，底栏费用/技能卡只剩几十像素；
+- 视觉提示词要求「时间轴纲要」，但没有字幕/目录时模型只能脑补；
+- B 站 AI 字幕可能与视频画面主题**完全无关**（实测某蔚蓝档案对局视频的 AI 字幕是一段 4000+ 字的健身口播，
+  与标题/标签/评论零交集；是错配还是音轨本身无关都不影响结论），旧流程会直接当事实喂给模型。
+
+修复：
+
+- 新增 `core/media/`：**一次 ffmpeg 解码**同时产出场景缩略图与原生分辨率底栏 HUD 裁片
+  （374 秒 1080P 实测约 10 秒，接近纯解码耗时；同一视频重复观看直接复用帧缓存，0 次解码）；
+- 场景选点改为「等宽时间箱 + 箱内变化分」，保证全片覆盖并优先切镜/转场；
+- 场景帧按 3×2 拼成 16:9 联表，每格标注时间，替代散装单帧；
+- 游戏实况额外生成 **HUD 操作栏时间带**（4×8 格，约 1.95 秒/格，自动裁掉 letterbox 黑边），
+  6 张覆盖约 6 分钟，模型可直接读 COST 数字、技能卡状态与阶段血条；
+- 新增 `GAMEPLAY_EXTRACTOR_SYSTEM_PROMPT`：把结论强制分成「画面可复核 / 观众提供 / 推断」三档，
+  读不清写「不可辨识」，采样间隔之间不得补全，只能读到费用时只输出费用时间轴；
+- 新增**评论区文字轴挖掘**：识别「轴/选牌/费用/时间点」类评论，单独作为观众证据，注明作者与点赞。
+
+### 修复：字幕与画质
+
+- `get_subtitle_track`：`wbi/v2` 返回空时自动回退 `player/v2`（实测存在只有后者能看到 AI 字幕的视频）；
+- **字幕可信度校验**：AI 字幕与标题/标签/评论的专有名词零交集且体量足够时判为 `suspect`，
+  不进入分析材料，报告注明「疑似错配」；音乐/舞蹈区不做拦截；
+- `get_stream_info`：取最高可用画质（登录态 1080P），并返回宽高与音频流；
+- 评论抓取支持分页（最多 40 条）与楼中楼预览。
+
+### 修复：长音频 ASR
+
+- 按 `asr_chunk_seconds`（默认 300 秒）分块抽轨与转录，单块失败不影响其它块；
+- 块内时间戳按块偏移合并；总时长受 `asr_max_seconds`（默认 1800 秒）约束；
+- 字幕被判为错配时，如果配置了 ASR，会用音频转录替代。
+
+### 新增
+
+- `bilibili_transcript` LLM 工具：按关键词/时间范围检索字幕或 ASR 原文，不重新看视频；
+- `bilibili_frame` LLM 工具：按时间点返回整帧 + 底栏 UI 裁片（1080P，路径限定在插件数据目录）；
+- `core/perception/transcript_store.py`：原文磁盘缓存（默认 72 小时，最多 200 条，原子写入）；
+- `core/utils/timecode.py`：秒数 / `mm:ss` / `hh:mm:ss` 解析；
+- 新配置：`asr_max_seconds`、`asr_chunk_seconds`、`frame_budget_cap`、`hud_sheet_max`、
+  `keep_frame_dirs`、`transcript_ttl_hours`；
+- 新测试：`tests/test_perception.py`、`tests/test_transcript.py`，并在 CI 中执行。
+
+### 移植自参考项目（v0.7.0–v0.12.2）
+
+| 参考版本 | 能力 | 处理 |
+| --- | --- | --- |
+| 0.7.1 | ASR 分块转录 | 已移植，时间戳按块偏移合并 |
+| 0.8.0 | 多张 16:9 联系图、连续叙事 | 已移植（3×2 联表 + 格内时间） |
+| 0.9.0 | 核心/其他客观内容拆分 | 未移植（本项目的三档证据结构已覆盖） |
+| 0.10.0 | 极致模式动态帧预算、原文直读 | 部分移植：动态帧预算 + 原文缓存/工具 |
+| 0.10.1 | 配置页分组 | 未移植（本项目配置项少，保持扁平） |
+| 0.11.0 | 像素预算、候选帧、超预算压缩 | 未移植（等宽联表不需要 DP 装箱；超预算压缩收益低） |
+| 0.12.0 | WebUI 管理页 | 未移植（与视频分析正交，另行评估） |
+| 0.12.1 | 双语字幕、补帧修复 | 未移植（补帧问题由时间箱选点规避） |
+| 0.12.2 | 内嵌字幕 OCR | 未移植：实测 RapidOCR 对日文游戏 UI 仅能读出英文，收益不足 |
+
+情感/人格化回复相关的 0.5.2–0.5.13 更新按要求**不移植**，本项目保持纯工具属性。
+
+### 已知限制
+
+- 采样帧之间（约 1.9 秒）发生的操作无法被看到；完整循环轴仍可能需要人工复核；
+- B 站字幕接口对同一条视频可能返回**互不相同且与画面无关**的文本（实测连续三次拿到健身口播、中文歌词、他人录像开场白），
+  插件会按可信度拦截，但拦截后如果没配 ASR，就只能依赖评论与画面；
+- HUD 时间带默认只裁画面右侧 48.5%、下方 18.5%，对底部居中 HUD 的游戏覆盖不足；
+- 超过 30 分钟的视频不生成 HUD 时间带（解码成本），回退为场景联表。
+
 ## [1.1.4] - 2026-10-26
 
 ### 元数据
@@ -51,7 +190,10 @@
 
 - 首次公开版本：双模门控、文本/弹幕/字幕/评论清洗、dHash 关键帧去重、MiMo / SiliconFlow ASR、30 分钟会话记忆、扫码登录解锁 1080P、每日配额与会话冷却、`bilibili_watch` LLM 工具。
 
-[Unreleased]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/compare/v1.1.4...HEAD
+[Unreleased]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/releases/tag/v1.4.0
+[1.3.0]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/releases/tag/v1.3.0
+[1.2.0]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/releases/tag/v1.2.0
 [1.1.4]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/releases/tag/v1.1.4
 [1.1.3]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/releases/tag/v1.1.3
 [1.1.2]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/releases/tag/v1.1.2

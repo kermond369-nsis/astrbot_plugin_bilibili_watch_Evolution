@@ -1,6 +1,6 @@
 # 贡献指南
 
-感谢你愿意为 **B站之眼 · evolution** 提交改进。本文说明开发环境、代码约定与 PR 流程。
+感谢你愿意为 **逐渐完善的预知眼** 提交改进。本文说明开发环境、代码约定与 PR 流程。
 
 ## 开始之前
 
@@ -25,7 +25,7 @@ python tests/test_asr.py
 <AstrBot>/data/plugins/astrbot_plugin_bilibili_watch
 ```
 
-然后重启 AstrBot，观察日志关键字 `[B站之眼evolution]`。
+然后重启 AstrBot，观察日志关键字 `[预知眼]`。
 
 ## 目录约定
 
@@ -35,7 +35,9 @@ python tests/test_asr.py
 | `core/cleaner/` | 文本/弹幕/字幕/帧/ASR 清洗 | **纯函数**，不得发起网络请求，便于离线单测 |
 | `core/gating/` | 双模门控 | 阈值可注入，避免散落魔法数字 |
 | `core/asr/` | ASR 引擎抽象 | 新引擎需实现 `BaseASREngine.transcribe` |
-| `core/perception/` | Prompt 构造、会话记忆 | 注意防提示词注入 |
+| `core/perception/` | Prompt 构造、会话记忆、字幕可信度 | 注意防提示词注入 |
+| `core/web/` | 设置页后端：字段规格、校验、缓存、Web API | 字段规格必须与 `_conf_schema.json` 同步（`tests/test_web.py` 会检查） |
+| `views/settings/` | AstrBot Plugin View 前端 | 无构建步骤、无外部 CDN；通过 `window.AstrBotPluginView` bridge 调用后端 |
 | `main.py` | 事件钩子、指令、LLM Tool、编排 | 阻塞操作一律走线程池 |
 
 ## 代码风格

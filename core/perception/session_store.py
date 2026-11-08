@@ -99,3 +99,25 @@ class SessionStore:
             oldest = sorted(self._records.items(), key=lambda kv: kv[1].created_at)
             for umo, _ in oldest[: len(self._records) - self.max_entries]:
                 self._records.pop(umo, None)
+
+    def list_recent(self, limit: int = 10) -> list[dict]:
+        """最近看过的视频摘要（供设置页展示，不返回任何正文）。"""
+        self._cleanup()
+        now = time.monotonic()
+        records = sorted(self._records.values(), key=lambda r: r.created_at, reverse=True)
+        items = []
+        for record in records[: max(1, int(limit))]:
+            meta = record.bundle.meta
+            items.append(
+                {
+                    "umo": record.umo,
+                    "bvid": meta.bvid,
+                    "title": meta.title,
+                    "up_name": meta.up_name,
+                    "duration": meta.duration,
+                    "gameplay": bool(getattr(record.bundle, "gameplay", False)),
+                    "digest_chars": len(record.digest or ""),
+                    "age_seconds": int(now - record.created_at),
+                }
+            )
+        return items

@@ -11,6 +11,7 @@ data/credentials.json
 # ---- 插件运行时数据 ----
 data/
 tests/temp_audio/
+tests/temp_frames/
 
 # ---- Python ----
 __pycache__/

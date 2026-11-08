@@ -1,8 +1,8 @@
 <div align="center">
 
-# B站之眼 · evolution
+# 逐渐完善的预知眼
 
-**智能清洗 × 双模门控 × ASR 补全的 B 站视频理解插件**
+**智能清洗 × 双模门控 × 画面证据链 × ASR 补全的 B 站视频理解插件**
 
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.16%2C%3C5-0ea5e9)](https://github.com/AstrBotDevs/AstrBot)
 [![License](https://img.shields.io/badge/License-MIT-22c55e)](LICENSE)
@@ -13,29 +13,34 @@
 
 ---
 
-> **项目缘起**：本项目是在 [AcceleratorYue / astrbot_plugin_bilibili_eyes](https://github.com/AcceleratorYue/astrbot_plugin_bilibili_eyes)（「B站之眼」：子代理看 B 站视频，主模型用自己的语气回复）的基础上重构演进而来。感谢原作者的开源工作。
+> **项目缘起**：本项目是在 [AcceleratorYue / astrbot_plugin_bilibili_eyes](https://github.com/AcceleratorYue/astrbot_plugin_bilibili_eyes)（原项目「B站之眼」：子代理看 B 站视频，主模型用自己的语气回复）的基础上重构演进而来。感谢原作者的开源工作。
 
 ## 简介
 
-**B站之眼 evolution** 是一个面向 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 的 B 站视频理解插件。它把一条 B 站链接变成一份**客观、结构化、可追溯**的内容报告：先抓取元数据/字幕/弹幕/评论，再按内容特征做**双模门控**——教程攻略类走纯文本极速总结（秒级、零视觉 Token），二次元切片类走弹幕高能波峰截帧 + 视觉模型观察；没有官方字幕时，按需接入 ASR 补齐台词。
+**逐渐完善的预知眼** 是一个面向 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 的 B 站视频理解插件。它把一条 B 站链接变成一份**客观、结构化、可追溯**的内容报告：先抓取元数据/字幕/弹幕/评论，再按内容特征做**双模门控**——教程攻略类走纯文本极速总结（秒级、零视觉 Token），二次元切片与完整游戏实况走**画面证据链**：一次解码同时产出场景联表与底栏操作栏时间带，交给视觉模型按「画面可复核 / 观众提供 / 推断」三档证据还原内容；没有可信字幕时，按需接入 ASR 补齐台词。
 
-插件以「工具属性优先」为设计原则：输出高信息密度的 Markdown 报告，不模拟真人语气，不臆测未出现的内容，拿不准的信息一律写入「不确定项」。
+插件以「工具属性优先」为设计原则：输出高信息密度的 Markdown 报告，不模拟真人语气，不臆测未出现的内容，拿不准的信息一律写入「不确定项」。对完整游戏录像，它宁可明确写「这段操作重建不了」，也不会编造技能轴。
 
-> **English abstract**: An AstrBot plugin for Bilibili video understanding. It cleans subtitles/danmaku/comments/description, picks a processing mode (text outline vs. visual meme), extracts keyframes with perceptual-hash deduplication, optionally transcribes audio via ASR (Xiaomi MiMo / SiliconFlow), and delivers a structured, source-grounded report. Zero heavy third-party dependencies — the Bilibili client is built on the Python standard library.
+> **English abstract**: An AstrBot plugin for Bilibili video understanding. It cleans subtitles/danmaku/comments/description, picks a processing mode (text outline vs. visual evidence), samples the video in a single ffmpeg pass (scene contact sheets + bottom-HUD timeline strips), optionally transcribes audio via ASR, and delivers a structured, source-grounded report. Every visual claim must map to a timestamped cell; audience-provided rotation notes are quoted separately. Zero heavy third-party dependencies — the Bilibili client is built on the Python standard library.
 
 ---
 
 ## 特性
 
-- **双模自适应门控**：按字幕密度、时间戳目录、弹幕波峰自动选择「纯文本纲要」或「视觉截帧」路线，避免为长口播视频浪费视觉 Token。
+- **双模自适应门控 + 游戏实况分支**：按字幕密度、时间戳目录、弹幕波峰、分区/标签自动选择「纯文本纲要」或「视觉证据」路线；识别为游戏实况时额外生成底栏 HUD 时间带。
+- **单次解码采样**：一次 ffmpeg 连流、一次解码，同时产出场景缩略图与原生分辨率 HUD 裁片（374 秒 1080P 实测约 10 秒，接近纯解码耗时）；替代旧版「每个时间点起一个进程重新连流 seek」，避免 8 次重复连接与首帧抖动，并把证据量从 8 帧提升到数百张。同一视频重复观看直接复用帧缓存。
+- **场景联表**：等宽时间箱选点 + 画面变化分加权，24 帧拼成 16:9 联表，每格标注时间，保证全片覆盖而不是只取打斗段落。
+- **操作轴证据**：底栏时间带按 4×8 格排列，保留费用/技能卡/血条原图；提示词要求每个「可复核操作」都能对上格内时间，读不清就写「不可读」。
+- **字幕可信度校验**：AI 字幕与标题/标签/评论的专有名词零交集时判为疑似错配，不进入分析材料；字幕接口 `wbi/v2` 为空时自动回退 `player/v2`。
+- **评论区文字轴挖掘**：从评论/楼中楼里挑出「文字轴、选牌、费用、时间点」类高信息原文，单独作为「观众提供」证据，注明作者与点赞。
 - **深度清洗管线**：简介广告/引流剥离、野生时间戳目录挖掘、字幕合并去口癖、弹幕密度分桶与梗词云、置顶评论优先。
-- **关键帧感知去重**：64 位 dHash + 汉明距离，相似帧自动剔除，黑屏/片头片尾自动规避。
-- **ASR 按需介入**：无官方字幕时才抽音轨转录；支持小米 MiMo（中文/方言）与硅基流动 SenseVoiceSmall（中日英韩多语言）。
+- **ASR 分块转录**：长音频按 300 秒分块，单块失败不拖垮整条，时间戳按块偏移合并；支持小米 MiMo 与硅基流动 SenseVoiceSmall。
+- **二次查询**：`bilibili_transcript` 直接检索字幕/ASR 原文；`bilibili_frame` 按时间点返回整帧 + 底栏 UI 裁片，用于追问「这一刻发生了什么」。
 - **30 分钟会话记忆**：看完视频后可直接追问细节，无需二次抓取。
+- **可视化设置页**：在 AstrBot 插件详情页打开「设置」视图，扫码登录、22 项配置、缓存清理、最近观看与运行诊断都在一个页面里；保存后热重载，无需重启。
 - **扫码登录**：管理员发 `/bili登录` 即可扫码绑定 B 站账号，解锁 1080P 截帧与更稳的字幕/评论接口。
 - **零重型依赖**：B 站客户端基于标准库实现（IPv4 强制连接、WBI 动态签名、buvid 指纹、412 退避），不依赖 `bilibili-api` 等第三方包。
 - **并发与频控**：独立线程池 + 信号量限流，支持每日配额、会话冷却、管理员豁免。
-- **LLM Tool 接入**：注册 `bilibili_watch` 工具，主模型可在对话中主动调用。
 
 ---
 
@@ -48,30 +53,36 @@
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │ 1. 采集层 (core/client)                                                       │
 │    • BiliClient：强制 IPv4、WBI 30s 密钥轮转、游客 buvid、412/-352 指数退避      │
+│      —— 取最高可用画质（登录态 1080P）、字幕双接口兜底、评论分页与楼中楼         │
 │    • CardExtractor：穿透 QQ 小程序 Ark 卡片与引用回复链，提取真实 BV 号          │
-│    • MediaExtractor：ffmpeg 抽音轨 / 关键帧截取，支持自定义路径与自动探测        │
+│    • MediaExtractor：ffmpeg 抽音轨 / 指定时间点截帧（可保留原始分辨率）           │
 └──────────────────────────────────┬───────────────────────────────────────────┘
                                    ▼
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │ 2. 清洗提纯层 (core/cleaner)                                                  │
 │    • text_cleaner：简介去广、时间戳目录挖掘、字幕合并与口癖剔除、评论去噪        │
 │    • danmaku_cleaner：自适应密度分桶，提取高能波峰与梗词云                       │
-│    • frame_filter：dHash 感知哈希去重 + 黑屏过滤                                │
 │    • asr_cleaner：ASR 幻觉/复读剔除、二次元术语纠偏、按标点断句平摊时间戳        │
+│    • evidence：字幕可信度校验（错配 AI 字幕拦截）、评论区文字轴挖掘、实况识别    │
 └──────────────────────────────────┬───────────────────────────────────────────┘
                                    ▼
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │ 3. 门控路由 (core/gating)                                                     │
 │    ├─ 模式 A：时间戳目录 + 高字速 → 纯文本纲要（3–8s，零视觉 Token）            │
-│    └─ 模式 B：字幕稀疏 / 弹幕高能 → 波峰锚定截帧 + 视觉模型观察（10–25s）        │
+│    ├─ 模式 B：字幕稀疏 / 弹幕高能 → 场景联表 + 视觉模型观察（10–25s）            │
+│    └─ 游戏实况：在模式 B 基础上追加底栏 HUD 时间带（费用/技能卡/血条）            │
 └──────────────────────────────────┬───────────────────────────────────────────┘
                                    ▼
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│ 4. 提炼与呈现 (core/perception)                                               │
-│    • prompt_builder：教程向 / 梗向两套结构化 System Prompt（防提示词注入）       │
-│    • session_store：30 分钟会话记忆，支持自然语言追问                            │
+│ 4. 证据与提炼 (core/media + core/perception)                                  │
+│    • sampler：单次 ffmpeg 解码 → 缩略图 + HUD 裁片 → 16:9 联表 / 操作栏时间带    │
+│    • prompt_builder：教程 / 梗向 / 游戏实况三套 System Prompt（证据分级）         │
+│    • session_store：30 分钟会话记忆；transcript_store：72 小时原文缓存           │
 │    • 子代理输出报告 → 注入主模型 → 由主模型以自身人设交付                        │
 └──────────────────────────────────────────────────────────────────────────────┘
+                                   ▲
+                                   │  views/settings（设置页）→ register_web_api
+                                   │  core/web：状态 / 配置保存 / 扫码登录 / 缓存 / 诊断
 ```
 
 **数据流**：`B站 API → CleanedVideoBundle（强类型数据契约）→ GatingPlan → 结构化报告 → 主模型回复`。所有中间产物都有 dataclass 定义（见 `core/models.py`），便于单独测试与替换。
@@ -82,12 +93,13 @@
 
 | 项 | 要求 | 说明 |
 | --- | --- | --- |
-| AstrBot | `>=4.16,<5` | 在 **4.29.1** 上实测通过 |
+| AstrBot | `>=4.16,<5` | 核心功能在 **4.29.1** 实测通过；可视化设置页按 Plugin Views 文档实现，需要支持 `views/` 与 `register_web_api` 的版本 |
 | Python | 3.10+ | 使用 AstrBot 自带运行环境即可 |
 | 消息平台 | OneBot v11（`aiocqhttp`） | 依赖 QQ 小程序卡片/引用回复的解析 |
 | 网络 | 可访问 B 站 API | 中国大陆网络通常无需代理 |
 | ffmpeg | 可选（视觉模式与 ASR 必需） | 可装系统包，或用配置项指定绝对路径 |
-| Pillow | 随 AstrBot 提供 | 仅用于关键帧去重（延迟导入，缺失时自动跳过） |
+| Pillow | 随 AstrBot 提供 | 用于场景联表 / HUD 时间带合成（延迟导入，缺失时退回散帧） |
+| qrcode | 可选（requirements.txt 会自动安装） | 本地渲染登录二维码；缺失时设置页/指令只显示登录链接 |
 
 ---
 
@@ -111,6 +123,8 @@ git clone https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolu
 ```
 
 > 手动复制/解压时同样要保证目录名为 `astrbot_plugin_bilibili_watch`，否则 AstrBot 会把它当成另一个插件（配置与数据目录都会变）。
+> AstrBot 通常会自动安装 `requirements.txt`（`qrcode`）；如果设置页二维码显示为纯链接，可在 AstrBot 的 Python 环境执行
+> `pip install -r requirements.txt` 后重载插件。
 
 ### 方式三：AstrBot 运行在 Docker 中
 
@@ -133,16 +147,19 @@ services:
 插件加载成功时，日志会输出：
 
 ```text
-[B站之眼evolution] 插件已加载 (版本 1.1.3，智能清洗与双模门控模式)
+[预知眼] 插件已加载 (版本 1.4.0，智能清洗与双模门控模式)
 ```
 
-同时 AstrBot 会注册一个 LLM 工具：
+同时 AstrBot 会注册三个 LLM 工具：
 
 ```text
 Added llm tool: bilibili_watch
+Added llm tool: bilibili_transcript
+Added llm tool: bilibili_frame
 ```
 
 在群内发送 `/bili状态`，应返回登录状态、ASR 引擎与 FFmpeg 探测结果。
+在 WebUI 插件详情页应能看到「设置」视图；打开后「概览」页会显示运行状态与最近观看。
 
 ---
 
@@ -165,7 +182,11 @@ Added llm tool: bilibili_watch
 | `asr_provider` | 语音识别服务商 | string | `none` | `none` / `mimo` / `siliconflow`，仅在视频无官方字幕时触发。 |
 | `mimo_api_key` | MiMo API Key | string | `""` | `asr_provider=mimo` 时必填。 |
 | `siliconflow_api_key` | 硅基流动 API Key | string | `""` | `asr_provider=siliconflow` 时必填。 |
-| `vision_provider_id` | 视觉子代理模型 ID | string | `""` | 留空跟随当前会话主模型；主模型不支持图片时建议显式指定一个多模态 Provider。 |
+| `vision_provider_id` | 视觉子代理模型 ID | string | `""` | 留空跟随 **AstrBot 全局默认对话模型**（不是当前会话模型）；填写 Provider ID 可强制指定，例如 `xiaomi/mimo-v2.6-flash`。 |
+| `gameplay_mode` | 游戏实况判定 | string | `auto` | `auto` 自动识别 / `on` 强制生成 HUD 时间带 / `off` 关闭游戏分支。 |
+| `mimo_base_url` | MiMo 接口地址 | string | `https://api.xiaomimimo.com/v1` | 一般无需修改；自建代理或兼容接口时才改。 |
+| `siliconflow_base_url` | 硅基流动接口地址 | string | `https://api.siliconflow.cn/v1` | 一般无需修改；自建代理或兼容接口时才改。 |
+| `siliconflow_model` | 硅基流动模型名 | string | `FunAudioLLM/SenseVoiceSmall` | 替换模型时需保证音频接口协议一致。 |
 | `ffmpeg_path` | FFmpeg 路径 | string | `""` | 留空按 `PATH → imageio-ffmpeg` 顺序自动探测。 |
 | `user_daily_quota` | 每用户每日次数 | int | `20` | `0` 表示不限制。 |
 | `quota_exempt_admins` | 管理员豁免次数限制 | bool | `true` | 群管理员与 AstrBot 管理员豁免。 |
@@ -173,14 +194,15 @@ Added llm tool: bilibili_watch
 | `ack_enabled` | 收到视频先回执 | bool | `true` | 先回一句「我去看看这个视频」，缓解等待焦虑。 |
 | `ack_template` | 回执文案 | string | `我去看看这个视频，稍等一下～` | 可自定义口吻。 |
 | `wait_notice_enabled` | 催更时提示进度 | bool | `true` | 观看期间群友催促时回复已耗时与阶段；`/stop`、`/reset`、`/new`、`/help` 仍正常放行。 |
+| `asr_max_seconds` | ASR 最长秒数 | int | `1800` | 单个视频最多转录多少秒；长视频分块处理，默认 30 分钟封顶。 |
+| `asr_chunk_seconds` | ASR 分块秒数 | int | `300` | 每块音频长度；单块失败不影响其它块。 |
+| `frame_budget_cap` | 场景帧上限 | int | `36` | 场景联表最多抽多少帧，游戏实况按片长加权后截断。 |
+| `hud_sheet_max` | HUD 时间带张数 | int | `6` | 游戏实况底栏时间带最多几张（每张 32 格）；张数越多覆盖越全，视觉 Token 越多。 |
+| `keep_frame_dirs` | 帧缓存保留数 | int | `6` | 保留最近多少个视频的截图缓存。 |
+| `transcript_ttl_hours` | 原文缓存小时 | int | `72` | 字幕/ASR 原文缓存保留时间，供 `bilibili_transcript` 二次查询。 |
 
-以下几项**只能**通过 `config.json` 或环境变量设置（不在面板暴露）：
-
-| 键 | 默认值 | 说明 |
-| --- | --- | --- |
-| `mimo_base_url` | `https://api.xiaomimimo.com/v1` | 小米 MiMo 接口地址。 |
-| `siliconflow_base_url` | `https://api.siliconflow.cn/v1` | 硅基流动接口地址。 |
-| `siliconflow_model` | `FunAudioLLM/SenseVoiceSmall` | 硅基流动 ASR 模型名。 |
+> 上面所有字段都可以在「设置 → 对应分组」里修改；`mimo_base_url`、`siliconflow_base_url`、
+> `siliconflow_model` 收在 ASR 分组的「高级选项」里。
 
 ### 环境变量
 
@@ -204,19 +226,60 @@ Added llm tool: bilibili_watch
   "mimo_api_key": "sk-your-mimo-key-here",
   "siliconflow_api_key": "",
   "vision_provider_id": "",
+  "gameplay_mode": "auto",
+  "mimo_base_url": "https://api.xiaomimimo.com/v1",
+  "siliconflow_base_url": "https://api.siliconflow.cn/v1",
+  "siliconflow_model": "FunAudioLLM/SenseVoiceSmall",
   "ffmpeg_path": "",
   "user_daily_quota": 20,
   "quota_exempt_admins": true,
   "cooldown_seconds": 15,
   "ack_enabled": true,
   "ack_template": "我去看看这个视频，稍等一下～",
-  "wait_notice_enabled": true
+  "wait_notice_enabled": true,
+  "asr_max_seconds": 1800,
+  "asr_chunk_seconds": 300,
+  "frame_budget_cap": 36,
+  "hud_sheet_max": 6,
+  "keep_frame_dirs": 6,
+  "transcript_ttl_hours": 72
 }
 ```
 
 ---
 
 ## 使用
+
+### 可视化设置页（推荐）
+
+安装并启用插件后，在 AstrBot WebUI 的「插件」页找到 **逐渐完善的预知眼**，点击插件卡片进入详情页，
+打开「设置」视图即可。页面分十栏：
+
+| 页面 | 内容 |
+| --- | --- |
+| 概览 | 登录/ASR/FFmpeg/视觉模型/帧缓存状态卡、最近观看、运行信息 |
+| 登录 | 二维码扫码、倒计时、账号信息、退出登录 |
+| 连接与登录 | SESSDATA（手动）、FFmpeg 路径 |
+| 模型与实况 | 视觉子代理 Provider、游戏实况判定 auto/on/off |
+| ASR | 服务商、两家 Key、接口地址/模型、最长转录与分块长度 |
+| 画面证据 | 场景帧上限、HUD 时间带张数、帧缓存保留数 |
+| 交互与频控 | 每日额度、管理员豁免、冷却、回执与催更提示 |
+| 缓存与原文 | 原文缓存时长 |
+| 缓存 | 截图/原文/二维码/临时音频的占用与分类清理 |
+| 诊断 | Python/平台/FFmpeg/配置路径/已注册接口、恢复默认 |
+
+- 表单有前端校验 + 服务端白名单校验；密钥输入框留空表示保持原值，点「清除」才会清空。
+- 保存写入 AstrBot 的插件配置（`save_config_async`），并热重载插件内配置、FFmpeg 路径与原文缓存 TTL。
+- 底部会出现「有 N 项未保存」的提示条；`Ctrl/Cmd + S` 也可保存。
+- 登录成功后凭据写入 `data/plugin_data/astrbot_plugin_bilibili_watch/credentials.json`，优先于设置里手填的 SESSDATA。
+
+![设置页概览](docs/settings-overview.jpg)
+![扫码登录](docs/settings-login.jpg)
+
+> 截图为本地 mock 数据，仅用于展示布局；实际页面跟随 AstrBot 亮/暗主题。
+
+> 可视化视图依赖较新的 AstrBot（Plugin Views）。如果你的 AstrBot 版本较旧、插件详情页看不到「设置」，
+> 仍可使用下面的指令与 `_conf_schema.json` 配置面板，功能不受影响。
 
 ### 指令
 
@@ -246,12 +309,26 @@ Added llm tool: bilibili_watch
 
 主模型会基于已提炼的事实作答，不会重复抓取 B 站。
 
+如果字幕/ASR 原文还在缓存期内，主模型还可以调用 `bilibili_transcript` 直接检索原文（关键词 + 时间范围），以及调用 `bilibili_frame` 取某个时间点的整帧画面与底栏 UI 裁片。
+
+### 完整游戏视频与操作轴
+
+游戏实况（按标题/标签/分区识别）会额外生成**底栏操作栏时间带**：每 1.95 秒左右一格，保留费用数字、技能卡、血条原图，4×8 格拼成一张；6 张覆盖约 6 分钟。配合 4 张场景联表，模型能按时间读到：
+
+- 费用从 8 掉到 4（说明发生了一次 4 费技能）；
+- 技能卡高亮/冷却/变灰、角色切入立绘、阶段血条变化；
+- 评论区观众手写的文字轴（单独标注「观众提供」，不冒充视频事实）。
+
+提示词把结论强制分成三档：**画面可复核 / 观众提供 / 推断**。采样间隔之间没有看到的部分，只能写「期间可能还有未采样到的操作」；读不清的角色/技能写「不可辨识」。因此完整的 30 秒循环轴仍可能需要人工复核，但不会再出现「模型凭空编一套轴」的情况。
+
+> 如果视频的 B 站 AI 字幕与标题/标签/评论的专有名词零交集（典型是错配到另一条视频的字幕，或音轨本身就是与画面无关的内容），插件会把它判为 `suspect` 并在分析材料中剔除，同时在报告里注明；配置 ASR 后会用音频转录替代，并把「音轨内容可能与画面无关」标出来。
+
 ### 登录与画质
 
 | 场景 | 画质 | 字幕/评论 |
 | --- | --- | --- |
 | 游客态 | 360P / 480P | 易触发 `-101`、`-352` 风控 |
-| 扫码登录 / 已配 SESSDATA | 1080P（`qn=80`） | 稳定获取 CC/AI 字幕 |
+| 扫码登录 / 已配 SESSDATA | 1080P（`qn=120` 请求，实际取最高可用） | 稳定获取 CC/AI 字幕 |
 
 扫码流程：管理员发送 `/bili登录` → 手机 B 站 App 扫码确认 → 凭据写入 `<AstrBot>/data/plugin_data/astrbot_plugin_bilibili_watch/credentials.json` → 立即生效，无需重启。
 
@@ -269,13 +346,22 @@ Added llm tool: bilibili_watch
 
 ```bash
 python tests/test_cleaners.py    # 清洗、目录挖掘、弹幕分桶、门控路由
+python tests/test_perception.py  # 帧预算、场景选点、字幕可信度、文字轴、联表合成
+python tests/test_transcript.py  # 时间点解析、原文缓存写入/检索/过期
+python tests/test_web.py         # 设置页字段与 schema 一致性、校验、脱敏、缓存清理
+python tests/test_web_api.py     # 设置页 Web API：保存/热重载/扫码/缓存/任务保护
 python tests/test_asr.py         # ASR 幻觉剔除、术语纠偏、时间戳平摊
+python tests/test_repo_hygiene.py# 版本一致性、配置 schema、敏感文件
 ```
 
 期望输出包含：
 
 ```text
 [PASS] All 6 core test cases passed successfully!
+[PASS] All perception tests passed successfully!
+[PASS] Transcript tests passed successfully!
+[PASS] Web settings tests passed successfully!
+[PASS] Web API tests passed successfully!
 ```
 
 ### 在线联调（需要网络与对应 Key）
@@ -296,6 +382,10 @@ python tests/live/test_siliconflow_live.py
 | 脚本 | 依赖 | 覆盖范围 |
 | --- | --- | --- |
 | `tests/test_cleaners.py` | 无 | 文本清洗、目录提取、弹幕波峰、双模路由 |
+| `tests/test_perception.py` | Pillow | 帧预算、场景选点、HUD 覆盖、字幕可信度、文字轴、联表尺寸 |
+| `tests/test_transcript.py` | 无 | 时间点解析、原文缓存生命周期 |
+| `tests/test_web.py` | 无 | 设置页字段与 schema 一致性、白名单校验、密钥脱敏、缓存安全清理 |
+| `tests/test_web_api.py` | 无 | 设置保存/热重载/扫码登录/缓存清理/任务保护 |
 | `tests/test_asr.py` | 无（MiMo 部分可选） | ASR 后处理、断句、术语纠偏 |
 | `tests/live/test_bili_client_live.py` | 网络 | 真实视频元数据、弹幕、评论、字幕抓取 |
 | `tests/live/test_mimo_live.py` | `MIMO_API_KEY` | MiMo ASR 协议握手 |
@@ -310,7 +400,7 @@ python tests/live/test_siliconflow_live.py
 1. 确认平台连接正常：AstrBot 日志出现 `[aiocqhttp]` 消息事件；
 2. 确认消息是**唤醒**状态（`@bot` 或以唤醒前缀开头）；
 3. 检查是否命中冷却（默认 15 秒/会话）或每日配额（默认 20 次/用户）；
-4. 查看 `journalctl` 或 WebUI 日志中 `[B站之眼evolution]` 的输出。
+4. 查看 `journalctl` 或 WebUI 日志中 `[预知眼]` 的输出。
 
 ### Q2：提示接口风控（`-412` / `-352`）？
 
@@ -351,7 +441,7 @@ AstrBot 的 t2i 是独立渲染器，与本插件无关：
 
 ### Q7：为什么有的视频 3 秒就出报告，有的要 20 多秒？
 
-这是双模门控的设计表现：教程/口播类（字幕完整、字速高）走纯文本模式，3–8 秒；二次元切片/手书/无字幕视频走弹幕波峰截帧 + 视觉模型，10–25 秒。
+这是双模门控的设计表现：教程/口播类（字幕完整、字速高）走纯文本模式，3–8 秒；二次元切片/手书/无字幕视频走画面证据 + 视觉模型，10–25 秒；游戏实况还要多解码一遍底栏 HUD，约 15–40 秒（同一视频 30 分钟内重复追问会复用帧缓存，几乎不再解码）。
 
 ---
 
@@ -375,19 +465,27 @@ AstrBot 的 t2i 是独立渲染器，与本插件无关：
 astrbot_plugin_bilibili_watch/
 ├── main.py                    # 插件入口：事件钩子、指令、LLM Tool、编排
 ├── metadata.yaml              # 插件元信息（名称、版本、平台支持）
-├── _conf_schema.json          # WebUI 配置面板 schema
+├── _conf_schema.json          # WebUI 配置面板 schema（22 项）
 ├── config.example.json        # 独立配置文件模板
+├── views/settings/            # 可视化设置页（index.html / app.js / style.css）
+├── .astrbot-plugin/i18n/      # 视图标题与描述（zh-CN / en-US）
 ├── core/
 │   ├── config.py              # 分层配置（WebUI > config.json > 环境变量）
 │   ├── models.py              # 强类型数据契约
 │   ├── client/                # B 站客户端、卡片解析、媒体抽帧
-│   ├── cleaner/               # 文本/弹幕/字幕/帧去重/ASR 清洗
-│   ├── gating/                # 双模门控路由
+│   ├── cleaner/               # 文本/弹幕/字幕/ASR 清洗与编排
+│   ├── gating/                # 双模门控 + 游戏实况分支
+│   ├── media/                 # 单次解码采样、帧预算、场景选点、联表合成
 │   ├── asr/                   # ASR 引擎抽象与两家实现
 │   ├── auth/                  # 扫码登录与凭据持久化
-│   └── perception/            # Prompt 构造与会话记忆
+│   ├── perception/            # Prompt、字幕可信度、文字轴、会话/原文缓存
+│   ├── web/                   # 设置页后端：字段规格、校验、缓存、Web API
+│   └── utils/                 # 时间点解析等无依赖小工具
 ├── tests/
 │   ├── test_cleaners.py       # 离线单测
+│   ├── test_perception.py     # 离线单测
+│   ├── test_transcript.py     # 离线单测
+│   ├── test_web.py            # 设置页字段/校验/缓存
 │   ├── test_asr.py            # 离线单测
 │   └── live/                  # 需要网络/Key 的联调脚本
 └── .github/workflows/ci.yml   # 离线测试 CI

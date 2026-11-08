@@ -1,0 +1,8 @@
+{
+  "views": {
+    "settings": {
+      "title": "Evolving Foresight Eye",
+      "description": "Settings for Evolving Foresight Eye: QR login, model & ASR, visual evidence, quotas, cache and diagnostics."
+    }
+  }
+}

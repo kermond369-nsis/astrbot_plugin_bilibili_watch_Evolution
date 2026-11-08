@@ -1,6 +1,7 @@
 """清洗流水线编排器（Cleaning Pipeline Orchestrator）。
 
-汇聚文本、弹幕、评论各个清洗器，将粗糙原始数据提纯为 CleanedVideoBundle。
+汇聚文本、弹幕、评论各个清洗器，将粗糙原始数据提纯为 CleanedVideoBundle，
+并额外产出「证据可信度」与「评论区高信息原文」两份分析侧材料。
 """
 
 from __future__ import annotations
@@ -20,6 +21,13 @@ from core.models import (
     RawDanmakuItem,
     RawSubtitleItem,
     RawVideoMeta,
+    SubtitleTrack,
+)
+from core.perception.evidence import (
+    assess_subtitle_trust,
+    extract_entities,
+    is_gameplay,
+    mine_axis_comments,
 )
 
 
@@ -28,12 +36,21 @@ def run_clean_pipeline(
     raw_subtitles: Sequence[RawSubtitleItem],
     raw_comments: Sequence[RawComment],
     raw_danmaku: Sequence[RawDanmakuItem],
+    subtitle_track: SubtitleTrack | None = None,
+    gameplay_mode: str = "auto",
 ) -> CleanedVideoBundle:
+    # 0. 字幕来源与可信度（错配的 AI 字幕不能进入事实材料）
+    track = subtitle_track
+    if track is None and raw_subtitles:
+        track = SubtitleTrack(items=list(raw_subtitles), source="official")
+    trust = assess_subtitle_trust(track, meta, raw_comments)
+    usable_subtitles = list(raw_subtitles) if trust.usable else []
+
     # 1. 简介清洗
     clean_desc = clean_description(meta.desc)
 
     # 2. 评论清洗（提纯置顶与高赞精选）
-    pinned_comment, curated_comments = clean_comments(raw_comments)
+    pinned_comment, curated_comments = clean_comments(raw_comments, max_count=12)
 
     # 3. 时间戳目录（野生目录君）挖掘：在简介与置顶评论中寻找
     outline_candidates = extract_timeline_outlines(meta.desc)
@@ -49,7 +66,7 @@ def run_clean_pipeline(
     timestamps_outline.sort(key=lambda x: x.seconds)
 
     # 4. 字幕重组与清洗
-    subtitles = clean_and_merge_subtitles(raw_subtitles)
+    subtitles = clean_and_merge_subtitles(usable_subtitles)
     total_words = sum(len(p.text) for p in subtitles)
     coverage = 0.0
     if meta.duration > 0 and subtitles:
@@ -58,6 +75,10 @@ def run_clean_pipeline(
 
     # 5. 弹幕高能波峰与情绪梗词挖掘
     high_energy_points = analyze_danmaku_peaks(raw_danmaku, meta.duration)
+
+    # 6. 评论区文字轴 / 高信息原文
+    entities = extract_entities(meta, raw_comments)
+    axis_comments = mine_axis_comments(raw_comments, entities)
 
     return CleanedVideoBundle(
         meta=meta,
@@ -70,4 +91,8 @@ def run_clean_pipeline(
         subtitle_coverage_ratio=coverage,
         has_outline=len(timestamps_outline) >= 2,
         total_subtitle_words=total_words,
+        subtitle_track=track,
+        subtitle_trust=trust,
+        axis_comments=axis_comments,
+        gameplay=is_gameplay(meta, mode=gameplay_mode),
     )

@@ -24,13 +24,16 @@
 | --- | --- | --- |
 | B 站 SESSDATA / 扫码凭据 | `<AstrBot>/data/plugin_data/astrbot_plugin_bilibili_watch/credentials.json` | 明文 JSON，权限由文件系统决定；`/bili注销` 可清除 |
 | 配置中的 API Key | AstrBot 插件配置或 `config.json` | 由 AstrBot 配置系统或文件权限保护 |
-| 视频元数据/字幕/弹幕 | 内存（30 分钟会话记忆） | 不落盘，进程重启即清空 |
-| 关键帧截图 | `<AstrBot>/data/plugin_data/astrbot_plugin_bilibili_watch/frames/` | 临时文件，可随时删除 |
+| 视频元数据/字幕/弹幕 | 内存（30 分钟会话记忆） | 不落盘；`data/plugin_data/.../transcripts/` 另存字幕/ASR 文本（默认 72 小时，可用 `transcript_ttl_hours` 调整） |
+| 关键帧截图 / 场景联表 / HUD 时间带 | `<AstrBot>/data/plugin_data/astrbot_plugin_bilibili_watch/frames/` | 临时文件，默认保留最近 6 个视频，可随时删除 |
 | 登录二维码 | `<AstrBot>/data/plugin_data/astrbot_plugin_bilibili_watch/qrcode/login_qr.png` | 本地渲染，不经过第三方二维码服务 |
 
 ## 已知边界与建议
 
 - 本插件不提供鉴权层，面板/配置的访问控制依赖 AstrBot 自身的账号体系；
+- **可视化设置页**（`views/settings`）可以在 Dashboard 内修改配置、发起扫码登录、清理缓存；
+  能打开该页面等同于拥有插件配置权限，多人共用 Dashboard 时请限制账号；
+- 设置页不会把密钥回传到前端：只返回「是否已配置」，保存时留空表示保持原值；
 - 扫码登录建议使用 B 站小号；
 - 若部署在多人可写的主机上，应限制插件目录权限，避免凭据被读取；
 - 插件不会把数据发送到 B 站与所配置 ASR 服务商之外的任何地址。

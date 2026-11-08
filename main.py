@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import functools
 import re
 import sys
@@ -38,7 +39,6 @@ from core.auth.qr_login import BiliQrLoginService
 from core.asr.engine_mimo import MimoASREngine
 from core.asr.engine_openai_compatible import OpenAICompatibleASREngine
 from core.cleaner.asr_cleaner import convert_asr_text_to_subtitles
-from core.cleaner.frame_filter import filter_and_deduplicate_frames
 from core.cleaner.pipeline import run_clean_pipeline
 from core.client.bili_client import BiliClient
 from core.client.card_extractor import extract_bilibili_card_url
@@ -46,17 +46,41 @@ from core.client.media_extractor import MediaExtractor
 from core.client.up_extractor import fetch_up_profile, normalize_up_query
 from core.config import AppConfig
 from core.gating.router import GatingRouter
-from core.models import CleanedVideoBundle, GatingPlan, ProcessingMode
+from core.media.frame_plan import hud_interval, select_scene_times
+from core.media.sampler import (
+    Sample,
+    analyze_changes,
+    cleanup_old_frames,
+    compose_contact_sheet,
+    compose_hud_sheet,
+    sample_stream,
+)
+from core.models import (
+    CleanedVideoBundle,
+    GatingPlan,
+    ProcessingMode,
+    RawSubtitleItem,
+    SubtitleTrack,
+)
+from core.perception.evidence import assess_subtitle_trust
 from core.perception.prompt_builder import (
-    MEME_EXTRACTOR_SYSTEM_PROMPT,
-    TUTORIAL_EXTRACTOR_SYSTEM_PROMPT,
+    EvidenceBundle,
+    SheetInfo,
     build_analysis_input,
+    pick_system_prompt,
 )
 from core.perception.session_store import SessionStore
+from core.perception.transcript_store import (
+    TranscriptLine,
+    TranscriptRecord,
+    TranscriptStore,
+)
+from core.utils.timecode import format_time_point, parse_time_point
+from core.web.api import PluginWebAPI
 
 PLUGIN_NAME = "astrbot_plugin_bilibili_watch"
-PLUGIN_VERSION = "1.1.4"  # 与 metadata.yaml 保持一致
-LOG = "[B站之眼evolution]"
+PLUGIN_VERSION = "1.4.0"  # 与 metadata.yaml 保持一致
+LOG = "[预知眼]"
 
 # 运行时数据统一放在 AstrBot 标准插件数据目录：data/plugin_data/<插件名>
 # （凭据、ASR 缓存音频、关键帧截图都写到这里，便于用户备份/迁移/审计）
@@ -74,12 +98,17 @@ class ActiveJob:
 class BilibiliWatchPlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
+        # 保留 AstrBot 的配置对象（dict 子类，带 save_config_async），设置页保存时用
+        self._plugin_config = config if isinstance(config, dict) else None
         # 统一分层配置读取：WebUI 传入 > 本地 config.json > 环境变量
         self.cfg = AppConfig.load(PLUGIN_DIR, config)
         PLUGIN_DATA_DIR.mkdir(parents=True, exist_ok=True)
         self._cred_manager = CredentialManager(PLUGIN_DATA_DIR)
         self._qr_service = BiliQrLoginService()
         self._session_store = SessionStore(ttl_seconds=1800)
+        self._transcripts = TranscriptStore(
+            PLUGIN_DATA_DIR / "transcripts", ttl_hours=self.cfg.transcript_ttl_hours
+        )
         self._active_jobs: dict[str, ActiveJob] = {}
         self._pending_triggers: dict[str, dict] = {}
         self._cooldown: dict[str, float] = {}
@@ -92,6 +121,16 @@ class BilibiliWatchPlugin(Star):
         # 核心服务组件
         self._media_extractor = MediaExtractor(self.cfg.ffmpeg_path)
         self._router = GatingRouter()
+
+        # 可视化设置页（views/settings + register_web_api）
+        self._web_api = PluginWebAPI(
+            self,
+            plugin_root=PLUGIN_DIR,
+            data_dir=PLUGIN_DATA_DIR,
+            plugin_name=PLUGIN_NAME,
+            version=PLUGIN_VERSION,
+        )
+        self._web_api.register(context)
 
         logger.info(f"{LOG} 插件已加载 (版本 {PLUGIN_VERSION}，智能清洗与双模门控模式)")
 
@@ -318,90 +357,293 @@ class BilibiliWatchPlugin(Star):
     async def _process_video_pipeline(
         self, job: ActiveJob, ref: str, event: AstrMessageEvent
     ) -> tuple[str, CleanedVideoBundle]:
-        """端到端核心处理流水线：拉取 -> ASR补充 -> 智能清洗 -> 门控决策 -> 子代理提炼。"""
+        """端到端核心处理流水线：拉取 -> 字幕校验/ASR -> 智能清洗 -> 门控 -> 画面证据 -> 子代理提炼。"""
         client = self._get_bili_client()
 
-        # 1. 抓取元数据
+        # 1. 抓取元数据（含分区与标签）
         job.stage = "抓取视频详情"
         meta = await self._run_in_pool(client.get_video_meta, ref)
         job.bvid = meta.bvid
         job.title = meta.title
 
-        # 2. 抓取弹幕与评论
-        job.stage = "抓取弹幕与评论"
-        danmaku_list, comments = await asyncio.gather(
+        # 2. 并发抓取弹幕、评论、字幕
+        job.stage = "抓取弹幕/评论/字幕"
+        danmaku_list, comments, track = await asyncio.gather(
             self._run_in_pool(client.get_danmaku, meta.cid),
-            self._run_in_pool(client.get_comments, meta.aid, 15),
+            self._run_in_pool(client.get_comments, meta.aid, 40),
+            self._run_in_pool(client.get_subtitle_track, meta.bvid, meta.cid),
         )
 
-        # 3. 尝试抓取官方字幕
-        job.stage = "提取字幕"
-        subs = await self._run_in_pool(client.get_subtitles, meta.bvid, meta.cid)
+        # 3. 字幕可信度预检：错配字幕或无字幕时，尝试用 ASR 重建口播
+        stream_info = None
+        trust = assess_subtitle_trust(track, meta, comments)
+        if (not track.items) or trust.level == "suspect":
+            if self.cfg.asr_provider != "none":
+                job.stage = "音轨分块与ASR转录"
+                stream_info = await self._run_in_pool(
+                    client.get_stream_info, meta.bvid, meta.cid
+                )
+                asr_track = await self._run_asr(job, meta, stream_info, client.media_headers())
+                if asr_track.ok:
+                    track = asr_track
 
-        # 4. ASR 智能介入 (当没有字幕，且配置了 ASR 引擎时)
-        asr_engine = self._get_asr_engine()
-        if not subs and asr_engine and meta.duration <= 900:
-            job.stage = "音频抽轨与ASR转录"
-            logger.info(f"{LOG} 无官方字幕，启动 ASR 语音识别流水线...")
-            try:
-                _v_url, a_url = await self._run_in_pool(client.get_stream_urls, meta.bvid, meta.cid)
-                if a_url:
-                    tmp_mp3 = PLUGIN_DATA_DIR / "cache" / f"asr_{meta.bvid}.mp3"
-                    ok = await self._run_in_pool(
-                        self._media_extractor.extract_asr_audio, a_url, tmp_mp3, min(meta.duration, 300)
-                    )
-                    if ok:
-                        asr_res = await self._run_in_pool(
-                            asr_engine.transcribe, tmp_mp3.read_bytes(), "mp3", "auto"
-                        )
-                        if asr_res.text:
-                            subs = convert_asr_text_to_subtitles(asr_res.text, float(meta.duration))
-                            logger.info(f"{LOG} ASR 成功转录 {len(subs)} 句台词！")
-                    if tmp_mp3.exists():
-                        tmp_mp3.unlink(missing_ok=True)
-            except Exception as e:
-                logger.warning(f"{LOG} ASR 转录失败，平滑降级: {e}")
-
-        # 5. 核心清洗流水线
+        # 4. 核心清洗流水线（内部会再次评估字幕可信度）
         job.stage = "智能降噪与清洗"
-        bundle = run_clean_pipeline(meta, subs, comments, danmaku_list)
+        bundle = run_clean_pipeline(
+            meta,
+            track.items,
+            comments,
+            danmaku_list,
+            subtitle_track=track,
+            gameplay_mode=self.cfg.gameplay_mode,
+        )
+        await self._save_transcript(bundle)
 
-        # 6. 门控路由裁决
+        # 5. 门控路由裁决
         plan = self._router.decide(bundle)
         logger.info(f"{LOG} 门控决策完成 -> 模式: {plan.mode.value} | 理由: {plan.reason}")
 
-        # 7. 根据门控决定是否截帧与去重
-        frame_paths: list[str] = []
+        # 6. 画面证据：一次解码同时产出场景联表 + 底栏操作栏时间带
+        images: list[str] = []
+        evidence: EvidenceBundle | None = None
         if plan.need_frames:
-            job.stage = "关键帧截图与感知去重"
-            v_url, _ = await self._run_in_pool(client.get_stream_urls, meta.bvid, meta.cid)
-            if v_url:
-                out_dir = PLUGIN_DATA_DIR / "frames" / meta.bvid
-                raw_frames = await self._run_in_pool(
-                    self._media_extractor.extract_frames,
-                    v_url,
-                    plan.target_frame_timestamps,
-                    out_dir,
-                )
-                # dHash 汉明去重
-                curated_frames = filter_and_deduplicate_frames(raw_frames, max_hamming_threshold=6)
-                frame_paths = [str(p) for p, _ in curated_frames]
-                logger.info(f"{LOG} 截帧 {len(raw_frames)} 张，去重后保留 {len(frame_paths)} 张")
+            job.stage = "采样画面证据"
+            evidence, images = await self._collect_frame_evidence(
+                job, client, meta, plan, stream_info
+            )
 
-        # 8. 唤醒模型进行客观事实与结构化提炼
+        # 7. 唤醒模型进行客观事实与结构化提炼
         job.stage = "提炼结构化分析报告"
-        analysis_prompt = build_analysis_input(bundle, plan)
-        system_prompt = (
-            TUTORIAL_EXTRACTOR_SYSTEM_PROMPT
-            if plan.mode == ProcessingMode.TEXT_OUTLINE
-            else MEME_EXTRACTOR_SYSTEM_PROMPT
-        )
+        analysis_prompt = build_analysis_input(bundle, plan, evidence=evidence)
+        system_prompt = pick_system_prompt(plan)
 
         provider_id = self.cfg.vision_provider_id
         digest = await self._call_subagent(
-            analysis_prompt, frame_paths, system_prompt, provider_id, event.unified_msg_origin
+            analysis_prompt, images, system_prompt, provider_id, event.unified_msg_origin
         )
         return digest, bundle
+
+    async def _run_asr(
+        self, job: ActiveJob, meta, stream_info, headers: dict | None = None
+    ) -> SubtitleTrack:
+        """长音频分块转录：每块独立抽轨 + 独立识别，单块失败不影响其它块。"""
+        engine = self._get_asr_engine()
+        if engine is None or stream_info is None or not stream_info.audio_url:
+            return SubtitleTrack()
+
+        headers = headers or {}
+        total = max(0, min(int(meta.duration), int(self.cfg.asr_max_seconds)))
+        if total <= 0:
+            return SubtitleTrack()
+        chunk = max(60, min(int(self.cfg.asr_chunk_seconds), 600))
+        items: list[RawSubtitleItem] = []
+        failures = 0
+
+        for offset in range(0, total, chunk):
+            duration = min(chunk, total - offset)
+            cache_file = PLUGIN_DATA_DIR / "cache" / f"asr_{meta.bvid}_{offset}.mp3"
+            ok = await self._run_in_pool(
+                self._media_extractor.extract_asr_audio,
+                stream_info.audio_url,
+                cache_file,
+                int(duration),
+                float(offset),
+                headers.get("Referer", "https://www.bilibili.com/"),
+                headers.get("User-Agent", ""),
+                headers.get("Cookie", ""),
+            )
+            if not ok:
+                failures += 1
+                continue
+            try:
+                asr_res = await self._run_in_pool(
+                    engine.transcribe, cache_file.read_bytes(), "mp3", "auto"
+                )
+                text = getattr(asr_res, "text", "") or ""
+            except Exception as exc:
+                logger.warning(f"{LOG} ASR 分块 {offset}s 失败: {exc}")
+                failures += 1
+                text = ""
+            finally:
+                cache_file.unlink(missing_ok=True)
+
+            if not text:
+                continue
+            for item in convert_asr_text_to_subtitles(text, float(duration)):
+                items.append(
+                    RawSubtitleItem(
+                        start=round(item.start + offset, 2),
+                        end=round(item.end + offset, 2),
+                        content=item.content,
+                    )
+                )
+
+        if not items:
+            logger.info(f"{LOG} ASR 未产出可用台词（失败块 {failures}）")
+            return SubtitleTrack(error=f"asr_empty:{failures}")
+        logger.info(f"{LOG} ASR 转录完成：{len(items)} 句，失败块 {failures}")
+        return SubtitleTrack(items=items, source="asr", lang="auto")
+
+    async def _collect_frame_evidence(
+        self, job: ActiveJob, client: BiliClient, meta, plan: GatingPlan, stream_info=None
+    ) -> tuple[EvidenceBundle | None, list[str]]:
+        """采样并编排证据图。返回 (证据索引, 图片路径列表)，图片顺序与索引一致。"""
+        if stream_info is None:
+            stream_info = await self._run_in_pool(client.get_stream_info, meta.bvid, meta.cid)
+        if stream_info is None or not stream_info.ok:
+            logger.warning(f"{LOG} 没有可用视频流，跳过画面证据")
+            return None, []
+
+        headers = client.media_headers()
+        workdir = PLUGIN_DATA_DIR / "frames" / meta.bvid
+        hud_gap = (
+            hud_interval(meta.duration, plan.hud_max_sheets or self.cfg.hud_sheet_max, 32)
+            if plan.need_hud
+            else 0.0
+        )
+        job.stage = "单次解码采样（场景帧 + HUD）"
+        sampling = await self._run_in_pool(
+            functools.partial(
+                sample_stream,
+                stream_info.video_url,
+                float(meta.duration),
+                workdir,
+                self._media_extractor.get_ffmpeg_exe(),
+                headers.get("Referer", "https://www.bilibili.com/"),
+                headers.get("User-Agent", ""),
+                headers.get("Cookie", ""),
+                None,
+                hud_gap,
+            )
+        )
+        if not sampling.ok:
+            logger.warning(f"{LOG} 采样失败，回退逐点截帧: {sampling.error}")
+            return await self._fallback_frame_evidence(workdir, meta, plan, stream_info, headers)
+
+        job.stage = "编排场景联表"
+        thumbs = sampling.thumbs
+        changes, _brightness = analyze_changes([s.thumb for s in thumbs])
+        selection = select_scene_times(
+            [s.time for s in thumbs],
+            changes,
+            min(plan.target_frame_count or 12, self.cfg.frame_budget_cap),
+            meta.duration,
+        )
+        by_time = {round(s.time, 1): s for s in thumbs}
+        chosen = []
+        for ts in selection.times:
+            sample = by_time.get(round(ts, 1))
+            if sample is None and thumbs:
+                sample = min(thumbs, key=lambda s: abs(s.time - ts))
+            if sample is not None:
+                chosen.append(sample)
+
+        images: list[str] = []
+        sheets: list[SheetInfo] = []
+        for sheet_no, start in enumerate(range(0, len(chosen), 6), start=1):
+            group = chosen[start : start + 6]
+            path = await self._run_in_pool(
+                compose_contact_sheet, group, workdir / f"scene_{sheet_no:02d}.jpg"
+            )
+            if not path:
+                continue
+            images.append(str(path))
+            sheets.append(
+                SheetInfo(
+                    index=len(images),
+                    kind="scene",
+                    start=group[0].time,
+                    end=group[-1].time,
+                    cells=len(group),
+                    sheet_no=sheet_no,
+                )
+            )
+
+        if plan.need_hud and sampling.huds:
+            job.stage = "编排操作栏时间带"
+            cell_count = 32
+            for sheet_no, start in enumerate(range(0, len(sampling.huds), cell_count), start=1):
+                group = sampling.huds[start : start + cell_count]
+                path = await self._run_in_pool(
+                    compose_hud_sheet, group, workdir / f"hud_{sheet_no:02d}.jpg"
+                )
+                if not path:
+                    continue
+                images.append(str(path))
+                sheets.append(
+                    SheetInfo(
+                        index=len(images),
+                        kind="hud",
+                        start=group[0].time,
+                        end=group[-1].time,
+                        cells=len(group),
+                        interval=sampling.hud_interval,
+                        sheet_no=sheet_no,
+                    )
+                )
+
+        cleanup_old_frames(
+            PLUGIN_DATA_DIR / "frames", meta.bvid, max_dirs=max(2, self.cfg.keep_frame_dirs)
+        )
+        if not images:
+            return None, []
+        return (
+            EvidenceBundle(
+                sheets=sheets,
+                frame_times=[s.time for s in chosen],
+                hud_interval=sampling.hud_interval,
+                sample_note=(
+                    f"缩略图 {sampling.thumb_count} 张（{sampling.thumb_fps:.2f} fps），"
+                    f"HUD 裁片 {sampling.hud_count} 张；图像均为原始截取，未做内容修改。"
+                ),
+            ),
+            images,
+        )
+
+    async def _fallback_frame_evidence(
+        self, workdir: Path, meta, plan: GatingPlan, stream_info, headers: dict
+    ) -> tuple[EvidenceBundle | None, list[str]]:
+        """单次解码不可用时的兜底：按门控时间点逐张截帧，再拼一张联表。"""
+        timestamps = [t for t in plan.target_frame_timestamps[:12] if 0 < t < meta.duration]
+        if not timestamps:
+            return None, []
+        out_dir = workdir / "fallback"
+        frames = await self._run_in_pool(
+            self._media_extractor.extract_frames,
+            stream_info.video_url,
+            timestamps,
+            out_dir,
+            720,
+            headers.get("Referer", "https://www.bilibili.com/"),
+            headers.get("User-Agent", ""),
+        )
+        if not frames:
+            return None, []
+        samples = [
+            Sample(index=i + 1, time=ts, thumb=path) for i, (path, ts) in enumerate(frames)
+        ]
+        path = await self._run_in_pool(
+            compose_contact_sheet, samples, workdir / "scene_fallback.jpg"
+        )
+        if not path:
+            return None, []
+        return (
+            EvidenceBundle(
+                sheets=[SheetInfo(index=1, kind="scene", start=samples[0].time, end=samples[-1].time, cells=len(samples))],
+                frame_times=[s.time for s in samples],
+                hud_interval=0.0,
+                sample_note="逐点截帧兜底（未启用单次解码采样）",
+            ),
+            [str(path)],
+        )
+
+    async def _global_provider(self):
+        """取 AstrBot 全局默认对话模型（不带 umo，避免被会话隔离覆盖）。"""
+        try:
+            return await self.context.get_using_provider_async()
+        except Exception as exc:
+            logger.warning(f"{LOG} 获取全局默认 Provider 失败: {exc}")
+            return None
 
     async def _session_provider(self, umo: str = ""):
         """取当前会话正在使用的主模型 Provider；失败返回 None。"""
@@ -411,14 +653,18 @@ class BilibiliWatchPlugin(Star):
             logger.warning(f"{LOG} 获取当前会话 Provider 失败: {exc}")
             return None
 
+    @staticmethod
+    def _provider_id(provider) -> str:
+        return str((getattr(provider, "provider_config", None) or {}).get("id") or "")
+
     async def _call_subagent(
         self, prompt: str, image_paths: list[str], system_prompt: str, provider_id: str, umo: str = ""
     ) -> str:
         """调用子代理提炼客观事实笔记。
 
-        AstrBot 4.x 的 Context.llm_generate 必须显式传入 chat_provider_id：
-        未配置 vision_provider_id 时回落到当前会话主模型，主模型不可用时再退回
-        Provider.text_chat 直调，避免视频分析因缺少 provider 而整体失败。
+        未配置 vision_provider_id 时，跟随 **AstrBot 全局默认对话模型**
+        （`context.get_using_provider_async()` 不带 umo，避免会话隔离影响）；
+        全局模型不可用时才回退当前会话模型，再回退 Provider.text_chat。
         """
         gen_kwargs: dict = {
             "prompt": prompt,
@@ -429,29 +675,55 @@ class BilibiliWatchPlugin(Star):
             gen_kwargs["image_urls"] = image_paths
 
         provider = None
-        if not provider_id:
-            provider = await self._session_provider(umo)
-            if provider is None:
-                logger.error(f"{LOG} 未配置 vision_provider_id 且当前会话没有可用模型 Provider")
-                return "（当前没有可用的对话模型 Provider，视频分析报告无法生成）"
-            provider_id = str((getattr(provider, "provider_config", None) or {}).get("id") or "")
-
         if provider_id:
-            try:
-                resp = await self.context.llm_generate(chat_provider_id=provider_id, **gen_kwargs)
-                return getattr(resp, "completion_text", "") or ""
-            except Exception as exc:
-                logger.error(f"{LOG} 子代理调用失败(provider={provider_id}): {exc}")
+            logger.info(f"{LOG} 视觉子代理：使用指定 Provider {provider_id}")
+        else:
+            provider = await self._global_provider()
+            if provider is None:
+                provider = await self._session_provider(umo)
+            if provider is None:
+                logger.error(f"{LOG} 未配置 vision_provider_id，且 AstrBot 没有可用的全局/会话对话模型")
+                return "（当前没有可用的对话模型 Provider，视频分析报告无法生成）"
+            provider_id = self._provider_id(provider)
+            logger.info(
+                f"{LOG} 视觉子代理：跟随 AstrBot 全局默认模型 {provider_id or provider.meta().id}"
+            )
 
-        # 兜底：直接调用当前会话 Provider
-        if provider is None:
-            provider = await self._session_provider(umo)
-        if provider is not None:
-            try:
-                resp = await provider.text_chat(**gen_kwargs)
-                return getattr(resp, "completion_text", "") or ""
-            except Exception as exc:
-                logger.error(f"{LOG} 兜底子代理调用失败: {exc}")
+        # 证据图较多时逐级降级：全部图 -> 前 4 张 -> 纯文本，避免一次超限整体失败
+        attempts: list[list[str]] = []
+        if image_paths:
+            attempts.append(list(image_paths))
+            if len(image_paths) > 4:
+                attempts.append(list(image_paths[:4]))
+        attempts.append([])
+
+        last_error = ""
+        for image_set in attempts:
+            call_kwargs = dict(gen_kwargs)
+            call_kwargs.pop("image_urls", None)
+            if image_set:
+                call_kwargs["image_urls"] = image_set
+            if provider_id:
+                try:
+                    resp = await self.context.llm_generate(chat_provider_id=provider_id, **call_kwargs)
+                    return getattr(resp, "completion_text", "") or ""
+                except Exception as exc:
+                    last_error = str(exc)
+                    logger.warning(
+                        f"{LOG} 子代理调用失败(provider={provider_id}, images={len(image_set)}): {exc}"
+                    )
+            if provider is None:
+                provider = await self._global_provider() or await self._session_provider(umo)
+            if provider is not None:
+                try:
+                    resp = await provider.text_chat(**call_kwargs)
+                    return getattr(resp, "completion_text", "") or ""
+                except Exception as exc:
+                    last_error = str(exc)
+                    logger.warning(
+                        f"{LOG} 兜底子代理调用失败(images={len(image_set)}): {exc}"
+                    )
+        logger.error(f"{LOG} 子代理全部重试均失败: {last_error}")
         return "（子代理观察超时或异常）"
 
     # -- 指令集 -------------------------------------------------------
@@ -593,7 +865,7 @@ class BilibiliWatchPlugin(Star):
             status_text = "已登录 [来自独立配置/环境变量，解锁 1080P 高清]"
 
         lines = [
-            "【B站之眼evolution 系统状态】",
+            "【逐渐完善的预知眼 系统状态】",
             f"• 登录状态: {status_text}",
             f"• ASR 语音识别: {asr_prov.upper() if asr_prov != 'none' else '已禁用'}",
             f"• FFmpeg 状态: {self._media_extractor.get_ffmpeg_exe()}",
@@ -627,3 +899,210 @@ class BilibiliWatchPlugin(Star):
             return f"看视频失败：{exc}"
         finally:
             self._active_jobs.pop(event.unified_msg_origin, None)
+
+    # -- 原文缓存与二次查询 -------------------------------------------
+
+    async def _save_transcript(self, bundle: CleanedVideoBundle) -> None:
+        """把字幕/ASR 原文落盘，供 bilibili_transcript 直接检索。"""
+        track = bundle.subtitle_track
+        if track is None or not track.items:
+            return
+        trust = bundle.subtitle_trust.level if bundle.subtitle_trust else "none"
+        record = TranscriptRecord(
+            bvid=bundle.meta.bvid,
+            title=bundle.meta.title,
+            source=track.source,
+            trust=trust,
+            duration=float(bundle.meta.duration),
+            lines=[
+                TranscriptLine(start=item.start, end=item.end, text=item.content)
+                for item in track.items
+            ],
+        )
+        try:
+            await self._run_in_pool(self._transcripts.save, record)
+        except Exception as exc:
+            logger.warning(f"{LOG} 原文缓存写入失败(不影响主流程): {exc}")
+
+    def _last_video_bvid(self, umo: str) -> str:
+        record = self._session_store.get(umo)
+        return record.bundle.meta.bvid if record else ""
+
+    @filter.llm_tool(name="bilibili_transcript")
+    async def tool_transcript(
+        self,
+        event: AstrMessageEvent,
+        keyword: str = "",
+        start: str = "",
+        end: str = "",
+        bvid: str = "",
+        limit: int = 20,
+    ):
+        """查询最近看过视频的字幕/ASR 原文，不重新看视频。需要原话、台词、具体时间点时使用。
+
+        Args:
+            keyword(string): 关键词，留空表示不限
+            start(string): 起始时间，秒数或 mm:ss / hh:mm:ss，留空从头
+            end(string): 结束时间，格式同上，留空到结尾
+            bvid(string): 可选；不填则用当前会话最近看过的视频
+            limit(int): 最多返回多少句，默认 20
+        """
+        target = (bvid or "").strip() or self._last_video_bvid(event.unified_msg_origin)
+        if not target:
+            return "最近没有看过视频；先让我看一个视频，或直接提供 BV 号。"
+        record = await self._run_in_pool(self._transcripts.get, target)
+        if record is None:
+            return (
+                f"没有 {target} 的原文缓存（可能过期，或该视频没有可用字幕/ASR）。"
+                "可以重新让我看一次视频来生成缓存。"
+            )
+        if record.trust == "suspect":
+            return (
+                f"{target} 的字幕被判定为疑似错配，已不进入分析材料，因此不提供原文。"
+                "建议配置 ASR 后重新观看，用音频转录替代。"
+            )
+        start_s = parse_time_point(start) if start else 0.0
+        end_s = parse_time_point(end) if end else None
+        if start and start_s is None:
+            return "start 格式不对，请用秒数、mm:ss 或 hh:mm:ss。"
+        if end and end_s is None:
+            return "end 格式不对，请用秒数、mm:ss 或 hh:mm:ss。"
+        hits = await self._run_in_pool(
+            self._transcripts.search,
+            target,
+            keyword,
+            start_s or 0.0,
+            end_s,
+            max(1, min(int(limit or 20), 60)),
+        )
+        if not hits:
+            return "这个范围内没有匹配的原文；可以换关键词，或放宽时间范围。"
+        source = {"official": "官方字幕", "ai": "B站AI字幕", "asr": "ASR转录"}.get(
+            record.source, record.source
+        )
+        lines = [f"【{record.title or target}｜{source}｜共 {len(hits)} 条命中】"]
+        for line in hits:
+            lines.append(f"[{format_time_point(line.start)}] {line.text}")
+        return "\n".join(lines)
+
+    @filter.llm_tool(name="bilibili_frame")
+    async def tool_frame(self, event: AstrMessageEvent, time_point: str, bvid: str = ""):
+        """查看最近看过视频的某一帧画面，返回整帧 + 底栏 UI 裁片；用户要看某个时间点的画面时使用。
+
+        Args:
+            time_point(string): 时间点，秒数或 mm:ss / hh:mm:ss
+            bvid(string): 可选；不填则用当前会话最近看过的视频
+        """
+        try:
+            from mcp.types import CallToolResult, ImageContent, TextContent
+        except Exception:
+            return "当前运行环境缺少 mcp.types，无法返回图片。"
+
+        def text_result(text: str):
+            return CallToolResult(content=[TextContent(type="text", text=text)])
+
+        umo = event.unified_msg_origin
+        record = self._session_store.get(umo)
+        if record is None:
+            return text_result("最近没有看过的视频；请先让我看一个视频再截图。")
+        meta = record.bundle.meta
+        wanted = (bvid or "").strip()
+        if wanted:
+            ref = await self._run_in_pool(self._get_bili_client().resolve_ref, wanted)
+            if ref and ref.upper() != meta.bvid.upper():
+                return text_result(f"最近看的是 {meta.bvid}，不是 {wanted}；请先看目标视频。")
+        target = parse_time_point(time_point)
+        if target is None:
+            return text_result("时间点格式不对，请用秒数、mm:ss 或 hh:mm:ss。")
+        if meta.duration and target > meta.duration:
+            return text_result(f"这个视频只有 {meta.duration} 秒，没有 {time_point} 这个时间点。")
+
+        client = self._get_bili_client()
+        out_dir = PLUGIN_DATA_DIR / "frames" / meta.bvid / "requested"
+        try:
+            info = await self._run_in_pool(client.get_stream_info, meta.bvid, meta.cid)
+            if not info.ok:
+                return text_result("这次没拿到视频流（可能网络/风控），稍后再试。")
+            headers = client.media_headers()
+            pairs = await self._run_in_pool(
+                self._media_extractor.extract_frames,
+                info.video_url,
+                [target],
+                out_dir,
+                1080,
+                headers.get("Referer", ""),
+                headers.get("User-Agent", ""),
+                headers.get("Cookie", ""),
+            )
+        except Exception as exc:
+            logger.warning(f"{LOG} 按时间点截帧失败: {exc}")
+            return text_result("这次没截到图（可能网络/风控），稍后再试。")
+        if not pairs:
+            return text_result("这个时间点没有截到画面，稍后再试。")
+
+        frame_path, actual = pairs[0]
+        payloads = [("整帧画面", frame_path)]
+        hud_path = self._crop_hud(frame_path)
+        if hud_path:
+            payloads.append(("底栏 UI 裁片（费用/技能卡/血条）", hud_path))
+
+        try:
+            root = PLUGIN_DATA_DIR.resolve()
+            content = [
+                TextContent(
+                    type="text",
+                    text=f"{meta.bvid} 在 {format_time_point(actual)} 附近的画面（原片 {format_time_point(target)}）。",
+                )
+            ]
+            for label, path in payloads:
+                data_path = Path(path).resolve()
+                if not data_path.is_relative_to(root):
+                    continue
+                payload = base64.b64encode(data_path.read_bytes()).decode("ascii")
+                mime = "image/png" if data_path.suffix.lower() == ".png" else "image/jpeg"
+                content.append(TextContent(type="text", text=label))
+                content.append(ImageContent(type="image", data=payload, mimeType=mime))
+        except Exception as exc:
+            logger.warning(f"{LOG} 读取截图失败: {exc}")
+            return text_result("读取截图失败，稍后再试。")
+        return CallToolResult(content=content)
+
+    @staticmethod
+    def _crop_hud(frame_path: Path) -> Path | None:
+        """从整帧里裁出底栏 UI，并适度放大，便于模型读费用/卡片。
+
+        先用 64x36 灰度估计画面有效区域，避开上下黑边；再取有效区域右下角。
+        """
+        try:
+            from PIL import Image
+
+            with Image.open(frame_path) as img:
+                width, height = img.size
+                small = img.convert("L").resize((64, 36))
+                pixels = list(small.getdata())
+                content_rows = []
+                for row in range(36):
+                    values = pixels[row * 64 : (row + 1) * 64]
+                    mean = sum(values) / 64
+                    var = sum((v - mean) ** 2 for v in values) / 64
+                    # 画面内容行：有亮度，或有明显的行内变化；纯黑边两者都低
+                    if mean > 12 or var ** 0.5 > 6:
+                        content_rows.append(row)
+                top = content_rows[0] if content_rows else 0
+                bottom = content_rows[-1] + 1 if content_rows else 36
+                content_top = int(height * top / 36)
+                content_bottom = int(height * bottom / 36)
+                content_height = max(1, content_bottom - content_top)
+                box = (
+                    int(width * 0.50),
+                    max(content_top, content_bottom - int(content_height * 0.20)),
+                    width,
+                    content_bottom,
+                )
+                crop = img.crop(box)
+                crop = crop.resize((crop.width * 2, crop.height * 2), Image.LANCZOS)
+                out = Path(frame_path).with_name(Path(frame_path).stem + "_hud.jpg")
+                crop.convert("RGB").save(out, quality=90)
+                return out
+        except Exception:
+            return None

@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from astrbot.api import logger
-from core.models import RawComment, RawDanmakuItem, RawSubtitleItem, RawVideoMeta
+from core.models import RawComment, RawDanmakuItem, RawSubtitleItem, RawVideoMeta, SubtitleTrack
 
 MIXIN_KEY_ENC_TAB = [
     46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49,
@@ -47,6 +47,21 @@ UA = (
 BV_RE = re.compile(r"BV[0-9A-Za-z]{10}")
 AV_RE = re.compile(r"av(\d+)", re.IGNORECASE)
 B23_RE = re.compile(r"https?://b23\.tv/[0-9A-Za-z]+")
+
+
+@dataclass
+class StreamInfo:
+    """一次 playurl 解析结果。"""
+
+    video_url: str | None = None
+    audio_url: str | None = None
+    width: int = 0
+    height: int = 0
+    quality: int = 0
+
+    @property
+    def ok(self) -> bool:
+        return bool(self.video_url)
 
 
 class _IPv4HTTPSConnection(http.client.HTTPSConnection):
@@ -95,6 +110,13 @@ class BiliClient:
         if delta < self.interval:
             time.sleep(self.interval - delta)
         self._last_request = time.monotonic()
+
+    def media_headers(self) -> dict[str, str]:
+        """给 ffmpeg 用的请求头（含登录 Cookie，1080P 流需要）。"""
+        headers = {"Referer": "https://www.bilibili.com/", "User-Agent": UA}
+        if self._sessdata:
+            headers["Cookie"] = f"SESSDATA={self._sessdata}"
+        return headers
 
     def request_raw(self, url: str, headers: dict[str, str] | None = None) -> bytes:
         self._throttle()
@@ -248,6 +270,8 @@ class BiliClient:
             up_uid=int((data.get("owner") or {}).get("mid") or 0),
             duration=int(p_data.get("duration") or data.get("duration") or 0),
             pubdate=int(data.get("pubdate") or 0),
+            tname=str(data.get("tname") or data.get("tname_v2") or ""),
+            tags=self.get_tags(str(data.get("bvid") or bvid)),
             views=int(stat.get("view") or 0),
             danmaku=int(stat.get("danmaku") or 0),
             replies=int(stat.get("reply") or 0),
@@ -257,17 +281,42 @@ class BiliClient:
             shares=int(stat.get("share") or 0),
         )
 
-    def get_subtitles(self, bvid: str, cid: int) -> list[RawSubtitleItem]:
-        """获取官方 CC 字幕或 AI 字幕"""
-        params = self.wbi_sign({"bvid": bvid, "cid": cid})
-        url = f"https://api.bilibili.com/x/player/wbi/v2?{urllib.parse.urlencode(params)}"
-        payload = self.get_json(url)
-        data = payload.get("data") or {}
-        sub_list = (data.get("subtitle") or {}).get("subtitles") or []
-        if not sub_list:
+    def get_tags(self, bvid: str) -> list[str]:
+        """视频标签。失败不影响主流程。"""
+        try:
+            payload = self.get_json(
+                f"https://api.bilibili.com/x/tag/archive/tags?bvid={urllib.parse.quote(bvid)}"
+            )
+            return [str(item.get("tag_name") or "") for item in payload.get("data") or [] if item.get("tag_name")]
+        except Exception:
             return []
 
-        # 优先选 zh-Hans 或 ai-zh
+    def get_subtitle_track(self, bvid: str, cid: int) -> SubtitleTrack:
+        """抓取字幕并保留来源信息。
+
+        B 站的 `wbi/v2` 与 `player/v2` 两个接口在不同视频上返回并不一致：
+        实测有视频只有 `player/v2` 能看到 AI 字幕，因此这里做双接口兜底。
+        """
+        sub_list: list[dict] = []
+        try:
+            params = self.wbi_sign({"bvid": bvid, "cid": cid})
+            url = f"https://api.bilibili.com/x/player/wbi/v2?{urllib.parse.urlencode(params)}"
+            payload = self.get_json(url)
+            sub_list = ((payload.get("data") or {}).get("subtitle") or {}).get("subtitles") or []
+        except Exception as exc:
+            logger.warning(f"wbi 字幕接口失败，尝试 player/v2: {exc}")
+
+        if not sub_list:
+            try:
+                url = f"https://api.bilibili.com/x/player/v2?bvid={urllib.parse.quote(bvid)}&cid={cid}"
+                payload = self.get_json(url)
+                sub_list = ((payload.get("data") or {}).get("subtitle") or {}).get("subtitles") or []
+            except Exception as exc:
+                return SubtitleTrack(error=f"字幕接口失败: {exc}")
+
+        if not sub_list:
+            return SubtitleTrack()
+
         chosen = None
         for lang_code in ("zh-Hans", "zh", "ai-zh", "en", "ja"):
             for item in sub_list:
@@ -283,9 +332,13 @@ class BiliClient:
         if sub_url.startswith("//"):
             sub_url = "https:" + sub_url
         if not sub_url:
-            return []
+            return SubtitleTrack(lang=str(chosen.get("lan") or ""), error="字幕地址为空")
 
-        raw_sub = self.get_json(sub_url)
+        try:
+            raw_sub = self.get_json(sub_url)
+        except Exception as exc:
+            return SubtitleTrack(lang=str(chosen.get("lan") or ""), error=f"字幕内容下载失败: {exc}")
+
         items: list[RawSubtitleItem] = []
         for body in raw_sub.get("body") or []:
             start = float(body.get("from") or 0.0)
@@ -293,7 +346,19 @@ class BiliClient:
             text = str(body.get("content") or "").strip()
             if text:
                 items.append(RawSubtitleItem(start=start, end=end, content=text))
-        return items
+
+        lang = str(chosen.get("lan") or "")
+        is_ai = lang.startswith("ai-") or int(chosen.get("type") or 0) == 1
+        return SubtitleTrack(
+            items=items,
+            source="ai" if is_ai else "official",
+            lang=lang,
+            lang_doc=str(chosen.get("lan_doc") or ""),
+        )
+
+    def get_subtitles(self, bvid: str, cid: int) -> list[RawSubtitleItem]:
+        """兼容旧调用：只返回字幕条目。"""
+        return self.get_subtitle_track(bvid, cid).items
 
     def get_danmaku(self, cid: int) -> list[RawDanmakuItem]:
         """获取视频全部弹幕"""
@@ -316,69 +381,126 @@ class BiliClient:
                 continue
         return items
 
-    def get_comments(self, aid: int, limit: int = 20) -> list[RawComment]:
-        """获取置顶与高赞评论"""
-        url = f"https://api.bilibili.com/x/v2/reply?type=1&oid={aid}&pn=1&ps={limit}&sort=2"
-        payload = self.get_json(url)
-        data = payload.get("data") or {}
+    def get_comments(self, aid: int, limit: int = 20, sort: int = 2, max_pages: int = 3) -> list[RawComment]:
+        """获取置顶与评论。
+
+        单页 ps 上限为 20；需要更多时按页拉取，并把楼中楼里同样有信息量的回复带上。
+        """
         comments: list[RawComment] = []
+        seen: set[str] = set()
 
         def parse_item(item: dict, pinned: bool = False):
             member = item.get("member") or {}
             content = (item.get("content") or {}).get("message") or ""
             like = int(item.get("like") or 0)
-            if content:
-                comments.append(
-                    RawComment(
-                        uname=str(member.get("uname") or "观众"),
-                        content=str(content).strip()[:500],
-                        like=like,
-                        pinned=pinned,
-                    )
+            if not content:
+                return
+            text = str(content).strip()
+            if text in seen:
+                return
+            seen.add(text)
+            replies = []
+            for reply in item.get("replies") or []:
+                msg = ((reply.get("content") or {}).get("message") or "").strip()
+                if msg:
+                    replies.append(msg[:300])
+            comments.append(
+                RawComment(
+                    uname=str(member.get("uname") or "观众"),
+                    content=text[:1200],
+                    like=like,
+                    pinned=pinned,
+                    replies=replies[:3],
                 )
+            )
 
-        # 优先读取 top 置顶评论
-        for top in data.get("top_replies") or []:
-            parse_item(top, pinned=True)
-        # 读取常规热门评论
-        for rep in data.get("replies") or []:
-            parse_item(rep, pinned=False)
+        page = 1
+        while len(comments) < limit and page <= max(1, max_pages):
+            url = (
+                f"https://api.bilibili.com/x/v2/reply?type=1&oid={aid}"
+                f"&pn={page}&ps=20&sort={sort}&nohot=1"
+            )
+            try:
+                payload = self.get_json(url)
+            except Exception:
+                break
+            data = payload.get("data") or {}
+            if page == 1:
+                for top in data.get("top_replies") or []:
+                    parse_item(top, pinned=True)
+            replies = data.get("replies") or []
+            if not replies:
+                break
+            for rep in replies:
+                parse_item(rep, pinned=False)
+                if len(comments) >= limit:
+                    break
+            page += 1
 
-        return comments
+        # 热门排序会把只有几个赞的「文字轴」压到后面；补一页按时间排序的最新评论
+        if len(comments) < limit and limit >= 30:
+            try:
+                payload = self.get_json(
+                    f"https://api.bilibili.com/x/v2/reply?type=1&oid={aid}&pn=1&ps=20&sort=0&nohot=1"
+                )
+                for rep in (payload.get("data") or {}).get("replies") or []:
+                    parse_item(rep, pinned=False)
+                    if len(comments) >= limit:
+                        break
+            except Exception:
+                pass
 
-    def get_stream_urls(self, bvid: str, cid: int) -> tuple[str | None, str | None]:
-        """获取视频流（Dash Video 480P）与纯音频流（Dash Audio）。
+        return comments[:limit]
 
-        :return: (video_stream_url, audio_stream_url)
+    def get_stream_info(self, bvid: str, cid: int) -> "StreamInfo":
+        """获取可用的最高画质视频流与音频流。
+
+        旧实现按 height 升序取第一个 >=360 的流，登录后反而恒选 360P；
+        这里改为取最高画质（最高 1080P，登录态不足时自动降级）。
         """
-        # 有登录态时请求 1080P (80) 或 720P (64)，游客态保底 360P (32)
-        target_qn = 80 if self._sessdata else 32
-        params = self.wbi_sign({"bvid": bvid, "cid": cid, "qn": target_qn, "fnval": 16, "fourk": 0})
+        target_qn = 120 if self._sessdata else 32
+        params = self.wbi_sign(
+            {"bvid": bvid, "cid": cid, "qn": target_qn, "fnval": 4048, "fourk": 1}
+        )
         url = f"https://api.bilibili.com/x/player/wbi/playurl?{urllib.parse.urlencode(params)}"
         payload = self.get_json(url)
         data = payload.get("data") or {}
         dash = data.get("dash") or {}
 
-        # 1. 提取视频流
         video_url: str | None = None
+        width = height = 0
         videos = [v for v in dash.get("video") or [] if v.get("baseUrl") or v.get("base_url")]
         if videos:
-            videos.sort(key=lambda x: int(x.get("height") or 0))
-            # 选 480P 或 360P
-            chosen = next((v for v in videos if int(v.get("height") or 0) >= 360), videos[0])
-            video_url = str(chosen.get("baseUrl") or chosen.get("base_url"))
+            # 优先 AVC（兼容性最好），再按分辨率/码率取最高
+            def rank(item: dict) -> tuple[int, int, int]:
+                codec_ok = 1 if int(item.get("codecid") or 0) in (7, 0) else 0
+                return (int(item.get("height") or 0), codec_ok, int(item.get("bandwidth") or 0))
 
-        # 2. 提取音频流
+            chosen = max(videos, key=rank)
+            video_url = str(chosen.get("baseUrl") or chosen.get("base_url"))
+            width = int(chosen.get("width") or 0)
+            height = int(chosen.get("height") or 0)
+
         audio_url: str | None = None
         audios = [a for a in dash.get("audio") or [] if a.get("baseUrl") or a.get("base_url")]
         if audios:
-            # 取第一条可用音频流
+            audios.sort(key=lambda x: int(x.get("bandwidth") or 0), reverse=True)
             audio_url = str(audios[0].get("baseUrl") or audios[0].get("base_url"))
 
-        # 如果没有 Dash，回退到 durl
         if not video_url:
             durls = [d for d in data.get("durl") or [] if d.get("url")]
             if durls:
                 video_url = str(durls[0]["url"])
 
-        return video_url, audio_url
+        return StreamInfo(
+            video_url=video_url,
+            audio_url=audio_url,
+            width=width,
+            height=height,
+            quality=int(data.get("quality") or 0),
+        )
+
+    def get_stream_urls(self, bvid: str, cid: int) -> tuple[str | None, str | None]:
+        """兼容旧调用：只要 (video_url, audio_url)。"""
+        info = self.get_stream_info(bvid, cid)
+        return info.video_url, info.audio_url
