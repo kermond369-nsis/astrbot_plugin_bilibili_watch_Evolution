@@ -79,7 +79,7 @@ from core.utils.timecode import format_time_point, parse_time_point
 from core.web.api import PluginWebAPI
 
 PLUGIN_NAME = "astrbot_plugin_bilibili_watch"
-PLUGIN_VERSION = "1.4.0"  # 与 metadata.yaml 保持一致
+PLUGIN_VERSION = "1.1.5"  # 与 metadata.yaml 保持一致
 LOG = "[预知眼]"
 
 # 运行时数据统一放在 AstrBot 标准插件数据目录：data/plugin_data/<插件名>

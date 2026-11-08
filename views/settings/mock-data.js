@@ -106,7 +106,7 @@ function fakeAvatar() {
 }
 
 const STATUS = {
-  version: "1.4.0",
+  version: "1.1.5",
   plugin_name: "astrbot_plugin_bilibili_watch",
   data_dir: "C:\\AstrBot\\data\\plugin_data\\astrbot_plugin_bilibili_watch",
   config_path: "C:\\AstrBot\\data\\config\\astrbot_plugin_bilibili_watch_config.json",

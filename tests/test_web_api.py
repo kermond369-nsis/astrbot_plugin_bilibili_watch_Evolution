@@ -115,11 +115,11 @@ async def run_async() -> None:
         plugin._session_store.put(
             "aiocqhttp:GroupMessage:1", bundle(), "digest", frame_paths=["/tmp/a.jpg"]
         )
-        api = PluginWebAPI(plugin, root, data, "astrbot_plugin_bilibili_watch", "1.4.0")
+        api = PluginWebAPI(plugin, root, data, "astrbot_plugin_bilibili_watch", "1.1.5")
 
         print(">>> [测试 1] 状态 / 设置 / 最近观看 / 诊断...")
         status = await api.get_status()
-        assert status["version"] == "1.4.0"
+        assert status["version"] == "1.1.5"
         assert status["cache"]["total_bytes"] >= 130
         assert status["login"]["logged_in"] is False
 
@@ -244,7 +244,7 @@ async def run_astrbot_config_case() -> None:
                 "mimo_api_key": "sk-old",
             }
         )
-        api = PluginWebAPI(plugin, root, data, "astrbot_plugin_bilibili_watch", "1.4.0")
+        api = PluginWebAPI(plugin, root, data, "astrbot_plugin_bilibili_watch", "1.1.5")
         original_json = web_api.json_body
 
         async def fake_json(default=None):
