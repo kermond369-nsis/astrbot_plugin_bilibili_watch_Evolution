@@ -11,6 +11,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+STUB_ROOT = PROJECT_ROOT / "tests" / "stub"
+if str(STUB_ROOT) not in sys.path:
+    sys.path.insert(0, str(STUB_ROOT))
+
 from core.cleaner.asr_cleaner import clean_asr_transcript, convert_asr_text_to_subtitles
 
 

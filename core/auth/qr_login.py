@@ -18,12 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-try:  # 允许在无 AstrBot 运行时的离线环境里单测
-    from astrbot.api import logger
-except Exception:  # pragma: no cover
-    import logging
-
-    logger = logging.getLogger("bilibili_watch")
+from astrbot.api import logger
 
 QR_GENERATE_URL = "https://passport.bilibili.com/x/passport-login/web/qrcode/generate"
 QR_POLL_URL = "https://passport.bilibili.com/x/passport-login/web/qrcode/poll"

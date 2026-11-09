@@ -12,6 +12,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+STUB_ROOT = PROJECT_ROOT / "tests" / "stub"
+if str(STUB_ROOT) not in sys.path:
+    sys.path.insert(0, str(STUB_ROOT))
+
 from core.web.cache import cleanup_cache, summarize_cache
 from core.web.spec import (
     ALL_FIELDS,

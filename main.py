@@ -46,13 +46,14 @@ from core.client.media_extractor import MediaExtractor
 from core.client.up_extractor import fetch_up_profile, normalize_up_query
 from core.config import AppConfig
 from core.gating.router import GatingRouter
-from core.media.frame_plan import hud_interval, select_scene_times
+from core.media.frame_plan import hud_interval, plan_frame_count, select_scene_times
 from core.media.sampler import (
     Sample,
     analyze_changes,
     cleanup_old_frames,
     compose_contact_sheet,
     compose_hud_sheet,
+    crop_hud_frame,
     sample_stream,
 )
 from core.models import (
@@ -62,11 +63,12 @@ from core.models import (
     RawSubtitleItem,
     SubtitleTrack,
 )
-from core.perception.evidence import assess_subtitle_trust
+from core.perception.evidence import assess_subtitle_trust, is_gameplay
 from core.perception.prompt_builder import (
     EvidenceBundle,
     SheetInfo,
     build_analysis_input,
+    fallback_image_indices,
     pick_system_prompt,
 )
 from core.perception.session_store import SessionStore
@@ -79,7 +81,7 @@ from core.utils.timecode import format_time_point, parse_time_point
 from core.web.api import PluginWebAPI
 
 PLUGIN_NAME = "astrbot_plugin_bilibili_watch"
-PLUGIN_VERSION = "1.1.5"  # 与 metadata.yaml 保持一致
+PLUGIN_VERSION = "1.1.6"  # 与 metadata.yaml 保持一致
 LOG = "[预知眼]"
 
 # 运行时数据统一放在 AstrBot 标准插件数据目录：data/plugin_data/<插件名>
@@ -145,9 +147,11 @@ class BilibiliWatchPlugin(Star):
 
     # -- 辅助工具 -----------------------------------------------------
 
-    async def _run_in_pool(self, func, *args):
+    async def _run_in_pool(self, func, *args, **kwargs):
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(self._executor, functools.partial(func, *args))
+        return await loop.run_in_executor(
+            self._executor, functools.partial(func, *args, **kwargs)
+        )
 
     def _get_bili_client(self) -> BiliClient:
         # 优先级：已扫码的本地持久化凭据 > WebUI/config.json/环境变量传入的凭据
@@ -376,14 +380,53 @@ class BilibiliWatchPlugin(Star):
 
         # 3. 字幕可信度预检：错配字幕或无字幕时，尝试用 ASR 重建口播
         stream_info = None
+        prefetched_evidence = None
         trust = assess_subtitle_trust(track, meta, comments)
         if (not track.items) or trust.level == "suspect":
             if self.cfg.asr_provider != "none":
-                job.stage = "音轨分块与ASR转录"
                 stream_info = await self._run_in_pool(
                     client.get_stream_info, meta.bvid, meta.cid
                 )
-                asr_track = await self._run_asr(job, meta, stream_info, client.media_headers())
+                extra_text = " ".join(c.content for c in comments[:10])[:800]
+                early_gameplay = is_gameplay(
+                    meta, extra_text=extra_text, mode=self.cfg.gameplay_mode
+                )
+                if early_gameplay and stream_info is not None and stream_info.ok:
+                    # 游戏实况必定走画面；ASR 与单次解码互不依赖，先并行起来
+                    job.stage = "并行：ASR 转录 + 画面采样"
+                    provisional_plan = GatingPlan(
+                        mode=ProcessingMode.VISUAL_MEME,
+                        reason="gameplay prefetch",
+                        need_frames=True,
+                        target_frame_count=plan_frame_count(
+                            meta.duration, 0, False, gameplay=True
+                        ),
+                        system_prompt_type="gameplay",
+                        gameplay=True,
+                        need_hud=True,
+                        hud_max_sheets=max(1, min(12, int(self.cfg.hud_sheet_max or 6))),
+                    )
+                    asr_result, sample_result = await asyncio.gather(
+                        self._run_asr(job, meta, stream_info, client.media_headers()),
+                        self._collect_frame_evidence(
+                            job, client, meta, provisional_plan, stream_info
+                        ),
+                        return_exceptions=True,
+                    )
+                    asr_track = (
+                        asr_result
+                        if isinstance(asr_result, SubtitleTrack)
+                        else SubtitleTrack(error=f"asr_task:{asr_result}")
+                    )
+                    if isinstance(sample_result, tuple):
+                        prefetched_evidence = sample_result
+                    else:
+                        logger.warning(f"{LOG} 并行画面采样失败: {sample_result}")
+                else:
+                    job.stage = "音轨分块与ASR转录"
+                    asr_track = await self._run_asr(
+                        job, meta, stream_info, client.media_headers()
+                    )
                 if asr_track.ok:
                     track = asr_track
 
@@ -400,17 +443,25 @@ class BilibiliWatchPlugin(Star):
         await self._save_transcript(bundle)
 
         # 5. 门控路由裁决
-        plan = self._router.decide(bundle)
+        plan = self._router.decide(bundle, self.cfg.hud_sheet_max)
         logger.info(f"{LOG} 门控决策完成 -> 模式: {plan.mode.value} | 理由: {plan.reason}")
 
         # 6. 画面证据：一次解码同时产出场景联表 + 底栏操作栏时间带
         images: list[str] = []
         evidence: EvidenceBundle | None = None
         if plan.need_frames:
-            job.stage = "采样画面证据"
-            evidence, images = await self._collect_frame_evidence(
-                job, client, meta, plan, stream_info
-            )
+            if (
+                prefetched_evidence is not None
+                and prefetched_evidence[0] is not None
+                and plan.gameplay
+            ):
+                evidence, images = prefetched_evidence
+                job.stage = "复用并行采样结果"
+            else:
+                job.stage = "采样画面证据"
+                evidence, images = await self._collect_frame_evidence(
+                    job, client, meta, plan, stream_info
+                )
 
         # 7. 唤醒模型进行客观事实与结构化提炼
         job.stage = "提炼结构化分析报告"
@@ -418,8 +469,21 @@ class BilibiliWatchPlugin(Star):
         system_prompt = pick_system_prompt(plan)
 
         provider_id = self.cfg.vision_provider_id
+        prompt_for_subset = (
+            lambda indices: build_analysis_input(
+                bundle, plan, evidence=evidence.subset(indices)
+            )
+            if evidence is not None
+            else analysis_prompt
+        )
         digest = await self._call_subagent(
-            analysis_prompt, images, system_prompt, provider_id, event.unified_msg_origin
+            analysis_prompt,
+            images,
+            system_prompt,
+            provider_id,
+            event.unified_msg_origin,
+            evidence=evidence,
+            prompt_for_subset=prompt_for_subset,
         )
         return digest, bundle
 
@@ -438,45 +502,98 @@ class BilibiliWatchPlugin(Star):
         chunk = max(60, min(int(self.cfg.asr_chunk_seconds), 600))
         items: list[RawSubtitleItem] = []
         failures = 0
+        referer = headers.get("Referer", "https://www.bilibili.com/")
+        user_agent = headers.get("User-Agent", "")
+        cookie = headers.get("Cookie", "")
+        full_file = PLUGIN_DATA_DIR / "cache" / f"asr_{meta.bvid}_full.mp3"
+        use_full = False
 
-        for offset in range(0, total, chunk):
-            duration = min(chunk, total - offset)
-            cache_file = PLUGIN_DATA_DIR / "cache" / f"asr_{meta.bvid}_{offset}.mp3"
-            ok = await self._run_in_pool(
+        # 长音频先整段拉一次，再本地切块；只有整段抽取失败才回到逐块连 CDN
+        if total > chunk:
+            full_file.unlink(missing_ok=True)
+            job.stage = "整段抽取音频"
+            use_full = await self._run_in_pool(
                 self._media_extractor.extract_asr_audio,
                 stream_info.audio_url,
-                cache_file,
-                int(duration),
-                float(offset),
-                headers.get("Referer", "https://www.bilibili.com/"),
-                headers.get("User-Agent", ""),
-                headers.get("Cookie", ""),
+                full_file,
+                int(total),
+                0.0,
+                referer,
+                user_agent,
+                cookie,
+                timeout=180,
             )
-            if not ok:
-                failures += 1
-                continue
-            try:
-                asr_res = await self._run_in_pool(
-                    engine.transcribe, cache_file.read_bytes(), "mp3", "auto"
-                )
-                text = getattr(asr_res, "text", "") or ""
-            except Exception as exc:
-                logger.warning(f"{LOG} ASR 分块 {offset}s 失败: {exc}")
-                failures += 1
-                text = ""
-            finally:
-                cache_file.unlink(missing_ok=True)
+            if use_full:
+                logger.info(f"{LOG} ASR 整段音频已缓存，后续本地切块（{total}s）")
 
-            if not text:
-                continue
-            for item in convert_asr_text_to_subtitles(text, float(duration)):
-                items.append(
-                    RawSubtitleItem(
-                        start=round(item.start + offset, 2),
-                        end=round(item.end + offset, 2),
-                        content=item.content,
+        try:
+            for offset in range(0, total, chunk):
+                duration = min(chunk, total - offset)
+                cache_file = PLUGIN_DATA_DIR / "cache" / f"asr_{meta.bvid}_{offset}.mp3"
+                if use_full:
+                    ok = await self._run_in_pool(
+                        self._media_extractor.slice_audio,
+                        full_file,
+                        cache_file,
+                        float(offset),
+                        int(duration),
                     )
-                )
+                    if not ok:
+                        logger.warning(f"{LOG} 本地切块 {offset}s 失败，回退 CDN 抽取")
+                        ok = await self._run_in_pool(
+                            self._media_extractor.extract_asr_audio,
+                            stream_info.audio_url,
+                            cache_file,
+                            int(duration),
+                            float(offset),
+                            referer,
+                            user_agent,
+                            cookie,
+                            timeout=120,
+                        )
+                else:
+                    ok = await self._run_in_pool(
+                        self._media_extractor.extract_asr_audio,
+                        stream_info.audio_url,
+                        cache_file,
+                        int(duration),
+                        float(offset),
+                        referer,
+                        user_agent,
+                        cookie,
+                        timeout=120,
+                    )
+                if not ok:
+                    failures += 1
+                    continue
+                try:
+                    asr_res = await self._run_in_pool(
+                        engine.transcribe,
+                        cache_file.read_bytes(),
+                        "mp3",
+                        "auto",
+                        timeout=max(60, min(180, int(duration))),
+                    )
+                    text = getattr(asr_res, "text", "") or ""
+                except Exception as exc:
+                    logger.warning(f"{LOG} ASR 分块 {offset}s 失败: {exc}")
+                    failures += 1
+                    text = ""
+                finally:
+                    cache_file.unlink(missing_ok=True)
+
+                if not text:
+                    continue
+                for item in convert_asr_text_to_subtitles(text, float(duration)):
+                    items.append(
+                        RawSubtitleItem(
+                            start=round(item.start + offset, 2),
+                            end=round(item.end + offset, 2),
+                            content=item.content,
+                        )
+                    )
+        finally:
+            full_file.unlink(missing_ok=True)
 
         if not items:
             logger.info(f"{LOG} ASR 未产出可用台词（失败块 {failures}）")
@@ -514,6 +631,9 @@ class BilibiliWatchPlugin(Star):
                 headers.get("Cookie", ""),
                 None,
                 hud_gap,
+                portrait=bool(stream_info.height > stream_info.width),
+                source_width=int(stream_info.width or 0),
+                source_height=int(stream_info.height or 0),
             )
         )
         if not sampling.ok:
@@ -540,6 +660,35 @@ class BilibiliWatchPlugin(Star):
 
         images: list[str] = []
         sheets: list[SheetInfo] = []
+
+        # HUD 必须排在场景前面：模型/Provider 有图片数量上限时，先保住操作轴证据
+        if plan.need_hud and sampling.huds:
+            job.stage = "编排操作栏时间带"
+            cell_count = 32
+            for sheet_no, start in enumerate(range(0, len(sampling.huds), cell_count), start=1):
+                group = sampling.huds[start : start + cell_count]
+                path = await self._run_in_pool(
+                    compose_hud_sheet,
+                    group,
+                    workdir / f"hud_{sheet_no:02d}.jpg",
+                    portrait=bool(stream_info.height > stream_info.width),
+                )
+                if not path:
+                    continue
+                images.append(str(path))
+                sheets.append(
+                    SheetInfo(
+                        index=len(images),
+                        kind="hud",
+                        start=group[0].time,
+                        end=group[-1].time,
+                        cells=len(group),
+                        interval=sampling.hud_interval,
+                        sheet_no=sheet_no,
+                    )
+                )
+
+        job.stage = "编排场景联表"
         for sheet_no, start in enumerate(range(0, len(chosen), 6), start=1):
             group = chosen[start : start + 6]
             path = await self._run_in_pool(
@@ -558,29 +707,6 @@ class BilibiliWatchPlugin(Star):
                     sheet_no=sheet_no,
                 )
             )
-
-        if plan.need_hud and sampling.huds:
-            job.stage = "编排操作栏时间带"
-            cell_count = 32
-            for sheet_no, start in enumerate(range(0, len(sampling.huds), cell_count), start=1):
-                group = sampling.huds[start : start + cell_count]
-                path = await self._run_in_pool(
-                    compose_hud_sheet, group, workdir / f"hud_{sheet_no:02d}.jpg"
-                )
-                if not path:
-                    continue
-                images.append(str(path))
-                sheets.append(
-                    SheetInfo(
-                        index=len(images),
-                        kind="hud",
-                        start=group[0].time,
-                        end=group[-1].time,
-                        cells=len(group),
-                        interval=sampling.hud_interval,
-                        sheet_no=sheet_no,
-                    )
-                )
 
         cleanup_old_frames(
             PLUGIN_DATA_DIR / "frames", meta.bvid, max_dirs=max(2, self.cfg.keep_frame_dirs)
@@ -658,7 +784,15 @@ class BilibiliWatchPlugin(Star):
         return str((getattr(provider, "provider_config", None) or {}).get("id") or "")
 
     async def _call_subagent(
-        self, prompt: str, image_paths: list[str], system_prompt: str, provider_id: str, umo: str = ""
+        self,
+        prompt: str,
+        image_paths: list[str],
+        system_prompt: str,
+        provider_id: str,
+        umo: str = "",
+        *,
+        evidence: EvidenceBundle | None = None,
+        prompt_for_subset=None,
     ) -> str:
         """调用子代理提炼客观事实笔记。
 
@@ -689,20 +823,30 @@ class BilibiliWatchPlugin(Star):
                 f"{LOG} 视觉子代理：跟随 AstrBot 全局默认模型 {provider_id or provider.meta().id}"
             )
 
-        # 证据图较多时逐级降级：全部图 -> 前 4 张 -> 纯文本，避免一次超限整体失败
-        attempts: list[list[str]] = []
+        # 证据图超限时优先保留 HUD：全部图 -> HUD + 1 张场景 -> 纯文本
+        all_indices = list(range(1, len(image_paths) + 1))
+        attempts: list[tuple[list[int], list[str]]] = []
         if image_paths:
-            attempts.append(list(image_paths))
+            attempts.append((all_indices, list(image_paths)))
             if len(image_paths) > 4:
-                attempts.append(list(image_paths[:4]))
-        attempts.append([])
+                indices = fallback_image_indices(evidence)
+                if indices and indices != all_indices:
+                    attempts.append(
+                        (indices, [image_paths[i - 1] for i in indices if 0 < i <= len(image_paths)])
+                    )
+        attempts.append(([], []))
 
         last_error = ""
-        for image_set in attempts:
+        for indices, image_set in attempts:
             call_kwargs = dict(gen_kwargs)
             call_kwargs.pop("image_urls", None)
             if image_set:
                 call_kwargs["image_urls"] = image_set
+            if prompt_for_subset is not None and indices != all_indices:
+                try:
+                    call_kwargs["prompt"] = prompt_for_subset(set(indices))
+                except Exception as exc:
+                    logger.warning(f"{LOG} 降级提示词重建失败，沿用完整提示词: {exc}")
             if provider_id:
                 try:
                     resp = await self.context.llm_generate(chat_provider_id=provider_id, **call_kwargs)
@@ -1009,7 +1153,7 @@ class BilibiliWatchPlugin(Star):
         wanted = (bvid or "").strip()
         if wanted:
             ref = await self._run_in_pool(self._get_bili_client().resolve_ref, wanted)
-            if ref and ref.upper() != meta.bvid.upper():
+            if ref and ref.split("?", 1)[0].upper() != meta.bvid.upper():
                 return text_result(f"最近看的是 {meta.bvid}，不是 {wanted}；请先看目标视频。")
         target = parse_time_point(time_point)
         if target is None:
@@ -1069,40 +1213,5 @@ class BilibiliWatchPlugin(Star):
 
     @staticmethod
     def _crop_hud(frame_path: Path) -> Path | None:
-        """从整帧里裁出底栏 UI，并适度放大，便于模型读费用/卡片。
-
-        先用 64x36 灰度估计画面有效区域，避开上下黑边；再取有效区域右下角。
-        """
-        try:
-            from PIL import Image
-
-            with Image.open(frame_path) as img:
-                width, height = img.size
-                small = img.convert("L").resize((64, 36))
-                pixels = list(small.getdata())
-                content_rows = []
-                for row in range(36):
-                    values = pixels[row * 64 : (row + 1) * 64]
-                    mean = sum(values) / 64
-                    var = sum((v - mean) ** 2 for v in values) / 64
-                    # 画面内容行：有亮度，或有明显的行内变化；纯黑边两者都低
-                    if mean > 12 or var ** 0.5 > 6:
-                        content_rows.append(row)
-                top = content_rows[0] if content_rows else 0
-                bottom = content_rows[-1] + 1 if content_rows else 36
-                content_top = int(height * top / 36)
-                content_bottom = int(height * bottom / 36)
-                content_height = max(1, content_bottom - content_top)
-                box = (
-                    int(width * 0.50),
-                    max(content_top, content_bottom - int(content_height * 0.20)),
-                    width,
-                    content_bottom,
-                )
-                crop = img.crop(box)
-                crop = crop.resize((crop.width * 2, crop.height * 2), Image.LANCZOS)
-                out = Path(frame_path).with_name(Path(frame_path).stem + "_hud.jpg")
-                crop.convert("RGB").save(out, quality=90)
-                return out
-        except Exception:
-            return None
+        """从整帧里裁出底栏 UI；裁切规则与采样器共用 hud_crop_fraction。"""
+        return crop_hud_frame(frame_path)

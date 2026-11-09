@@ -16,17 +16,24 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
 
-try:  # 允许在无 AstrBot 运行时的离线环境里单测
-    from astrbot.api import logger
-except Exception:  # pragma: no cover
-    import logging
-
-    logger = logging.getLogger("bilibili_watch")
+from astrbot.api import logger
 
 THUMB_HEIGHT = 480
 THUMB_MAX_FRAMES = 300
-HUD_MAX_WIDTH = 1280
-HUD_FRACTION = (0.515, 0.815, 0.485, 0.185)  # x, y, w, h（相对画面）
+HUD_MAX_WIDTH = 1920
+# 横屏先取整条底栏，合成时再按边缘密度选左/中/右窗口，避免只赌右下角
+HUD_FRACTION = (0.0, 0.815, 1.0, 0.185)
+HUD_PORTRAIT_FRACTION = (0.0, 0.75, 1.0, 0.25)  # 竖屏底部通栏
+HUD_CROP_VERSION = 3  # 裁切算法变更时递增，使旧帧缓存失效
+HUD_WINDOW_CANDIDATES = (
+    (0.0, 0.485),    # 左侧
+    (0.15, 0.75),    # 居中
+    (0.515, 1.0),    # 右侧
+)
+
+
+def hud_crop_fraction(portrait: bool) -> tuple[float, float, float, float]:
+    return HUD_PORTRAIT_FRACTION if portrait else HUD_FRACTION
 
 
 @dataclass
@@ -82,14 +89,11 @@ def build_filter_complex(
 ) -> str:
     """构造双输出滤镜图。"""
     thumb = f"[0:v]fps={thumb_fps},scale=-2:{THUMB_HEIGHT}:flags=bilinear[t]"
-    if portrait:
-        crop = "crop=trunc(iw/2)*2:trunc(ih*0.25/2)*2:0:trunc(ih*0.75/2)*2"
-    else:
-        x, y, w, h = HUD_FRACTION
-        crop = (
-            f"crop=trunc(iw*{w}/2)*2:trunc(ih*{h}/2)*2:"
-            f"trunc(iw*{x}/2)*2:trunc(ih*{y}/2)*2"
-        )
+    x, y, w, h = hud_crop_fraction(portrait)
+    crop = (
+        f"crop=trunc(iw*{w}/2)*2:trunc(ih*{h}/2)*2:"
+        f"trunc(iw*{x}/2)*2:trunc(ih*{y}/2)*2"
+    )
     hud = f"[0:v]fps={hud_fps},{crop},scale='min(iw,{HUD_MAX_WIDTH})':-2:flags=lanczos[h]"
     return f"{thumb};{hud}"
 
@@ -114,6 +118,9 @@ def _load_cache(
     hud_interval: float,
     thumb_dir: Path,
     hud_dir: Path,
+    source_width: int = 0,
+    source_height: int = 0,
+    portrait: bool = False,
 ) -> SamplingResult | None:
     try:
         data = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -124,6 +131,14 @@ def _load_cache(
     if abs(float(data.get("thumb_fps", 0)) - thumb_fps) > 0.01:
         return None
     if abs(float(data.get("hud_interval", 0)) - hud_interval) > 0.01:
+        return None
+    if int(data.get("crop_version", 0)) != HUD_CROP_VERSION:
+        return None
+    if int(data.get("source_width", 0)) != int(source_width):
+        return None
+    if int(data.get("source_height", 0)) != int(source_height):
+        return None
+    if bool(data.get("portrait", False)) != bool(portrait):
         return None
     thumbs = sorted(thumb_dir.glob("*.jpg"))
     huds = sorted(hud_dir.glob("*.jpg")) if hud_dir.exists() else []
@@ -161,6 +176,8 @@ def sample_stream(
     thumb_fps: float | None = None,
     hud_interval: float = 0.0,
     portrait: bool = False,
+    source_width: int = 0,
+    source_height: int = 0,
     force: bool = False,
 ) -> SamplingResult:
     """单次解码采样。hud_interval<=0 表示不要 HUD 裁片。
@@ -178,7 +195,17 @@ def sample_stream(
     meta_path = out_dir / "sample_meta.json"
 
     if not force and meta_path.exists():
-        cached = _load_cache(meta_path, duration, thumb_fps, hud_interval, thumb_dir, hud_dir)
+        cached = _load_cache(
+            meta_path,
+            duration,
+            thumb_fps,
+            hud_interval,
+            thumb_dir,
+            hud_dir,
+            source_width=source_width,
+            source_height=source_height,
+            portrait=portrait,
+        )
         if cached is not None:
             return cached
 
@@ -253,6 +280,10 @@ def sample_stream(
                     "hud_interval": result.hud_interval,
                     "thumb_count": len(thumb_samples),
                     "hud_count": len(hud_samples),
+                    "source_width": int(source_width),
+                    "source_height": int(source_height),
+                    "portrait": bool(portrait),
+                    "crop_version": HUD_CROP_VERSION,
                 },
                 ensure_ascii=False,
             ),
@@ -311,7 +342,6 @@ def estimate_content_box(images: Sequence[Path], sample_limit: int = 12) -> tupl
     返回 (left, top, right, bottom) 的归一化比例；估计失败返回 None。
     """
     try:
-        import numpy as np
         from PIL import Image
     except Exception:  # pragma: no cover
         return None
@@ -319,19 +349,31 @@ def estimate_content_box(images: Sequence[Path], sample_limit: int = 12) -> tupl
     paths = [p for p in images if Path(p).exists()][:sample_limit]
     if len(paths) < 3:
         return None
-    stack = []
+    dark_hits = [[0] * 64 for _ in range(36)]
+    frame_count = 0
     for path in paths:
         try:
             with Image.open(path) as img:
-                stack.append(np.asarray(img.convert("L").resize((64, 36)), dtype=np.float32))
+                pixels = list(img.convert("L").resize((64, 36)).getdata())
         except Exception:
             continue
-    if len(stack) < 3:
+        frame_count += 1
+        for row in range(36):
+            base = row * 64
+            for col in range(64):
+                if pixels[base + col] < 12:
+                    dark_hits[row][col] += 1
+    if frame_count < 3:
         return None
-    frames = np.stack(stack)
-    dark_ratio = (frames < 12).mean(axis=0)  # [H, W]
-    rows_dark = (dark_ratio > 0.9).mean(axis=1) > 0.9
-    cols_dark = (dark_ratio > 0.9).mean(axis=0) > 0.9
+
+    rows_dark = []
+    for row in range(36):
+        dark_cols = sum(1 for col in range(64) if dark_hits[row][col] / frame_count >= 0.9)
+        rows_dark.append(dark_cols / 64 >= 0.9)
+    cols_dark = []
+    for col in range(64):
+        dark_rows = sum(1 for row in range(36) if dark_hits[row][col] / frame_count >= 0.9)
+        cols_dark.append(dark_rows / 36 >= 0.9)
 
     top = 0
     while top < 36 and rows_dark[top]:
@@ -348,6 +390,108 @@ def estimate_content_box(images: Sequence[Path], sample_limit: int = 12) -> tupl
     if right - left < 8 or bottom - top < 8:
         return None
     return (left / 64, top / 36, right / 64, bottom / 36)
+
+
+def _edge_profile(image) -> list[float]:
+    """返回底栏图的逐列水平边缘强度（96 列，已归一化）。"""
+    gray = image.convert("L").resize((96, 16))
+    pixels = list(gray.getdata())
+    profile: list[float] = []
+    for x in range(95):
+        total = 0
+        for y in range(16):
+            base = y * 96 + x
+            total += abs(pixels[base + 1] - pixels[base])
+        profile.append(total / 16.0)
+    # 3 列滑动平均，避免单列噪声
+    smooth = []
+    for i in range(len(profile)):
+        lo = max(0, i - 1)
+        hi = min(len(profile), i + 2)
+        smooth.append(sum(profile[lo:hi]) / max(1, hi - lo))
+    return smooth
+
+
+def _best_window(profiles: Sequence[Sequence[float]]) -> tuple[float, float]:
+    if not profiles:
+        return (0.15, 0.75)
+    count = len(profiles[0])
+    avg = [
+        sum(profile[i] for profile in profiles) / len(profiles)
+        for i in range(count)
+    ]
+    best = HUD_WINDOW_CANDIDATES[1]
+    best_score = -1.0
+    for start, end in HUD_WINDOW_CANDIDATES:
+        lo = int(start * count)
+        hi = max(lo + 1, int(end * count))
+        score = sum(avg[lo:hi]) / (hi - lo)
+        if score > best_score:
+            best_score = score
+            best = (start, end)
+    # 画面几乎无边缘（纯色/黑屏）时用居中窗口兜底
+    if best_score < 0.8:
+        return (0.15, 0.75)
+    return best
+
+
+def choose_hud_window(image) -> tuple[float, float]:
+    """根据底栏边缘密度选择横向窗口（左/中/右）。"""
+    return _best_window([_edge_profile(image)])
+
+
+def choose_hud_window_for_images(images: Sequence[object]) -> tuple[float, float]:
+    return _best_window([_edge_profile(image) for image in images])
+
+
+def _crop_window(image, window: tuple[float, float]):
+    width, height = image.size
+    left = int(width * window[0])
+    right = int(width * window[1])
+    if right - left < 8:
+        return image
+    return image.crop((left, 0, right, height))
+
+
+def crop_hud_frame(frame_path: Path, portrait: bool | None = None) -> Path | None:
+    """从整帧裁出底栏 UI（横屏右下角 / 竖屏底部通栏），放大 2 倍。"""
+    try:
+        from PIL import Image
+
+        with Image.open(frame_path) as img:
+            width, height = img.size
+            if portrait is None:
+                portrait = height > width
+            small = img.convert("L").resize((64, 36))
+            pixels = list(small.getdata())
+            content_rows = []
+            for row in range(36):
+                values = pixels[row * 64 : (row + 1) * 64]
+                mean = sum(values) / 64
+                var = sum((v - mean) ** 2 for v in values) / 64
+                if mean > 12 or var ** 0.5 > 6:
+                    content_rows.append(row)
+            top = content_rows[0] if content_rows else 0
+            bottom = content_rows[-1] + 1 if content_rows else 36
+            content_top = int(height * top / 36)
+            content_bottom = int(height * bottom / 36)
+            content_height = max(1, content_bottom - content_top)
+            fx, fy, fw, fh = hud_crop_fraction(portrait)
+            box = (
+                int(width * fx),
+                max(content_top, content_top + int(content_height * fy)),
+                int(width * min(1.0, fx + fw)),
+                min(content_bottom, content_top + int(content_height * (fy + fh))),
+            )
+            band = img.crop(box)
+            window = (0.0, 1.0) if portrait else choose_hud_window(band)
+            crop = _crop_window(band, window)
+            crop = crop.resize((crop.width * 2, crop.height * 2), Image.LANCZOS)
+            out = Path(frame_path).with_name(Path(frame_path).stem + "_hud.jpg")
+            crop.convert("RGB").save(out, quality=90)
+            return out
+    except Exception:
+        return None
 
 
 def _crop_box(image, box: tuple[float, float, float, float]):
@@ -413,6 +557,7 @@ def compose_hud_sheet(
     cols: int = 4,
     rows: int = 8,
     cell_width: int = 400,
+    portrait: bool = False,
 ) -> Path | None:
     """把底栏 HUD 裁片按时间顺序拼成「操作栏时间带」。
 
@@ -440,6 +585,10 @@ def compose_hud_sheet(
             continue
     if not loaded:
         return None
+
+    if not portrait:
+        window = choose_hud_window_for_images([image for _, image in loaded])
+        loaded = [(sample, _crop_window(image, window)) for sample, image in loaded]
 
     ratios = [image.width / max(1, image.height) for _, image in loaded]
     ratios.sort()

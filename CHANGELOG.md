@@ -4,6 +4,31 @@
 
 ## [Unreleased]
 
+## [1.1.6] - 2026-11-09
+
+本版修复画面证据链的配置接线、降级顺序与缓存失效问题；接口、配置键、数据目录保持兼容。
+
+### 修复
+
+- **日志记录器统一为 AstrBot 官方入口**：移除 `core/web/api.py`、`core/client/media_extractor.py`、`core/media/sampler.py`、`core/auth/qr_login.py`、`core/client/bili_client.py` 中的 `import logging` 回退，发布代码一律 `from astrbot.api import logger`；离线单测改由 `tests/stub` 提供最小 `astrbot.api` stub。
+- **HUD 时间带张数配置生效**：`GatingRouter.decide()` 接收 `hud_sheet_max`，不再写死 6；设置页改成 2 或 12 后下一次观看即生效。
+- **超过 30 分钟的游戏实况继续生成 HUD**：HUD 张数本来就受 `hud_sheet_max` 封顶，间隔公式会自动放稀；不再因为时长直接丢掉操作轴证据。
+- **图片降级优先保留 HUD**：HUD 图排在场景图之前；Provider 限制图片数量时，降级为 HUD + 1 张场景，并同步重建提示词里的图像索引，不再把整条操作轴丢掉。
+- **竖屏 HUD 与横屏自适应窗口**：`sample_stream` 传入实际宽高与 `portrait`；竖屏取底部 25% 通栏；横屏先取整条底栏，合成时按边缘密度在左/中/右三个窗口中自动选一段；追问截图 `_crop_hud` 与采样器共用 `hud_crop_fraction` / `crop_hud_frame`。
+- **帧缓存加入画质与裁切版本**：`sample_meta.json` 记录 `source_width/source_height/portrait/crop_version`；登录后从 360P 升到 1080P 会重新采样，不再复用旧画质帧。
+- **游戏实况 ASR 与画面采样并行**：早期判定为 gameplay 时，ASR 与单次解码同时进行，再复用采样结果，减少串行等待。
+- **ASR 整段抽取 + 本地切块**：长音频先整段下载一次，再按 `asr_chunk_seconds` 本地切片；只有整段抽取失败才回退逐块连 CDN；上传超时从固定 30 秒放宽到按块时长 60–180 秒。
+- **分 P 链接**：`resolve_ref` 保留 `?p=N`，`get_video_meta` 解析并只分析当前 P；标题和提示词标注「第 N/M P」。
+- **长字幕覆盖全片**：纯文本模式最多送 240 段；超过时按时间均匀抽样，不再只取前 60 段（约前 25 分钟）。
+- **游戏误判收窄**：从玩法关键词移除过宽的「教程」「轴」，避免 AutoCAD 教程等被当成游戏实况。
+- **黑边检测不再依赖 numpy**：`estimate_content_box` 改为纯 Pillow 实现，避免缺失 numpy 时 HUD 时间带带着黑边合成。
+
+### 已知限制 / 未做
+
+- 横屏 HUD 用「边缘密度」在左/中/右三个窗口里选，不是 OCR 定位；极低对比度或 UI 与场景边缘混杂时仍可能选错。
+- ASR 整段抽取会先下载完整音频（最多 `asr_max_seconds`），慢网下首块等待时间比逐块流式更长。
+- `dm/list.so` 不是全量弹幕，热门视频的波峰仍可能偏低。
+
 ## [1.1.5] - 2026-11-08
 
 本版是 v1.1.4 之后的非破坏性功能更新，重点有三块：
@@ -179,7 +204,8 @@
 
 - 首次公开版本：双模门控、文本/弹幕/字幕/评论清洗、dHash 关键帧去重、MiMo / SiliconFlow ASR、30 分钟会话记忆、扫码登录解锁 1080P、每日配额与会话冷却、`bilibili_watch` LLM 工具。
 
-[Unreleased]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/compare/v1.1.5...HEAD
+[Unreleased]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/compare/v1.1.6...HEAD
+[1.1.6]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/releases/tag/v1.1.6
 [1.1.5]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/releases/tag/v1.1.5
 [1.1.4]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/releases/tag/v1.1.4
 [1.1.3]: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution/releases/tag/v1.1.3

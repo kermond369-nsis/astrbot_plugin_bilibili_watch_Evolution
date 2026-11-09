@@ -8,7 +8,7 @@ desc: >-
   按「画面可复核 / 观众提供 / 推断」三档证据还原操作轴，无字幕时按需接入 ASR。
   提供可视化设置页：扫码登录、全部配置、缓存清理与运行诊断。
   纯工具属性优先，输出高信息密度的 Markdown 报告，拿不准的信息写入不确定项。
-version: 1.1.5
+version: 1.1.6
 author: kermond369-nsis
 repo: https://github.com/kermond369-nsis/astrbot_plugin_bilibili_watch_Evolution
 astrbot_version: ">=4.16,<5"

@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from astrbot.api import logger
+
 from core.models import RawComment, RawDanmakuItem, RawSubtitleItem, RawVideoMeta, SubtitleTrack
 
 MIXIN_KEY_ENC_TAB = [
@@ -47,6 +48,22 @@ UA = (
 BV_RE = re.compile(r"BV[0-9A-Za-z]{10}")
 AV_RE = re.compile(r"av(\d+)", re.IGNORECASE)
 B23_RE = re.compile(r"https?://b23\.tv/[0-9A-Za-z]+")
+PAGE_RE = re.compile(r"(?:[?&]|&amp;)(?:p|page)=(\d+)", re.IGNORECASE)
+
+
+def extract_page_number(text: str) -> int:
+    """从链接或重定向 HTML 中提取 1-based 分 P 序号。"""
+    match = PAGE_RE.search(text or "")
+    if not match:
+        return 0
+    try:
+        return max(1, int(match.group(1)))
+    except ValueError:
+        return 0
+
+
+def with_page(video_id: str, page: int) -> str:
+    return f"{video_id}?p={page}" if page and page > 1 else video_id
 
 
 @dataclass
@@ -221,26 +238,31 @@ class BiliClient:
         return signed
 
     def resolve_ref(self, ref_or_url: str) -> str:
-        """从任意文本/短链中提取 BV 号。"""
+        """从任意文本/短链中提取 BV/av 号；分 P 链接保留 ?p=N。"""
         text = ref_or_url.strip()
+        page = extract_page_number(text)
         if "b23.tv" in text:
             try:
-                raw = self.request_raw(text)
-                match = BV_RE.search(raw.decode("utf-8", "replace"))
+                raw_text = self.request_raw(text).decode("utf-8", "replace")
+                page = page or extract_page_number(raw_text)
+                match = BV_RE.search(raw_text)
                 if match:
-                    return match.group(0)
+                    return with_page(match.group(0), page)
             except Exception:
                 pass
         match = BV_RE.search(text)
         if match:
-            return match.group(0)
+            return with_page(match.group(0), page)
         match = AV_RE.search(text)
         if match:
-            return f"av{match.group(1)}"
+            return with_page(f"av{match.group(1)}", page)
         return text
 
-    def get_video_meta(self, ref: str, page: int = 1) -> RawVideoMeta:
-        bvid = self.resolve_ref(ref)
+    def get_video_meta(self, ref: str, page: int | None = None) -> RawVideoMeta:
+        page = page or extract_page_number(ref) or 1
+        raw_id = self.resolve_ref(ref)
+        page = page or extract_page_number(raw_id) or 1
+        bvid = raw_id.split("?", 1)[0]
         if bvid.startswith("BV"):
             url = f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}"
         elif bvid.lower().startswith("av"):
@@ -257,6 +279,10 @@ class BiliClient:
         page_idx = min(max(1, page), len(pages) or 1)
         p_data = pages[page_idx - 1] if pages else data
         stat = data.get("stat") or {}
+        series_title = str(data.get("title") or "")
+        part_title = str(p_data.get("part") or "").strip()
+        if len(pages) > 1 and part_title:
+            series_title = f"{series_title}｜P{page_idx} {part_title}"
 
         return RawVideoMeta(
             bvid=str(data.get("bvid") or bvid),
@@ -264,7 +290,7 @@ class BiliClient:
             cid=int(p_data.get("cid") or data.get("cid") or 0),
             page=page_idx,
             page_count=len(pages) or 1,
-            title=str(data.get("title") or ""),
+            title=series_title,
             desc=str(data.get("desc") or ""),
             up_name=str((data.get("owner") or {}).get("name") or ""),
             up_uid=int((data.get("owner") or {}).get("mid") or 0),

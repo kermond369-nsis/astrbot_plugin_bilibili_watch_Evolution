@@ -12,9 +12,6 @@ from __future__ import annotations
 from core.media.frame_plan import plan_frame_count
 from core.models import CleanedVideoBundle, GatingPlan, ProcessingMode
 
-GAMEPLAY_MAX_DURATION_FOR_HUD = 1800  # 超过 30 分钟不做 HUD 密集采样（解码成本过高）
-
-
 class GatingRouter:
     def __init__(
         self,
@@ -26,7 +23,9 @@ class GatingRouter:
         self.meme_dm_threshold = meme_danmaku_peaks_threshold
         self.default_meme_frame_count = default_meme_frame_count
 
-    def decide(self, bundle: CleanedVideoBundle) -> GatingPlan:
+    def decide(
+        self, bundle: CleanedVideoBundle, hud_max_sheets: int = 6
+    ) -> GatingPlan:
         duration = max(1, bundle.meta.duration)
         duration_minutes = duration / 60.0
         words_per_minute = bundle.total_subtitle_words / max(0.5, duration_minutes)
@@ -50,20 +49,20 @@ class GatingRouter:
                 gameplay=True,
             )
             frame_timestamps = self._plan_frame_timestamps(bundle, count)
-            need_hud = duration <= GAMEPLAY_MAX_DURATION_FOR_HUD
+            sheets = max(1, min(12, int(hud_max_sheets or 6)))
             return GatingPlan(
                 mode=ProcessingMode.VISUAL_MEME,
                 reason=(
                     f"识别为游戏实况/攻略（{duration}s，字幕 {bundle.total_subtitle_words} 字），"
-                    f"启用 {count} 帧场景证据" + ("+底栏 HUD 时间带" if need_hud else "")
+                    f"启用 {count} 帧场景证据+底栏 HUD 时间带（{sheets} 张上限）"
                 ),
                 need_frames=True,
                 target_frame_count=count,
                 target_frame_timestamps=frame_timestamps,
                 system_prompt_type="gameplay",
                 gameplay=True,
-                need_hud=need_hud,
-                hud_max_sheets=6,
+                need_hud=True,
+                hud_max_sheets=sheets,
             )
 
         # 3. 字幕密度足够高（且时长在合理区间）-> 知识讲解/教程/剧情口播

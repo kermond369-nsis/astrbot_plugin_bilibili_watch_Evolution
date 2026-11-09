@@ -16,6 +16,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+STUB_ROOT = PROJECT_ROOT / "tests" / "stub"
+if str(STUB_ROOT) not in sys.path:
+    sys.path.insert(0, str(STUB_ROOT))
+
 from core.cleaner.danmaku_cleaner import analyze_danmaku_peaks
 from core.cleaner.frame_filter import compute_dhash, hamming_distance
 from core.cleaner.pipeline import run_clean_pipeline

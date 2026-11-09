@@ -16,12 +16,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-try:  # 允许在无 AstrBot 运行时的离线环境里单测
-    from astrbot.api import logger
-except Exception:  # pragma: no cover
-    import logging
-
-    logger = logging.getLogger("bilibili_watch")
+from astrbot.api import logger
 
 from core.client.media_extractor import MediaExtractor
 from core.config import AppConfig

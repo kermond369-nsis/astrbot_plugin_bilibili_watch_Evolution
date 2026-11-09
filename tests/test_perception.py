@@ -18,14 +18,31 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+STUB_ROOT = PROJECT_ROOT / "tests" / "stub"
+if str(STUB_ROOT) not in sys.path:
+    sys.path.insert(0, str(STUB_ROOT))
+
 from core.media.frame_plan import (
     hud_interval,
     hud_sheet_count,
     plan_frame_count,
     select_scene_times,
 )
-from core.media.sampler import Sample, compose_contact_sheet, compose_hud_sheet
+from core.client.bili_client import extract_page_number, with_page
+from core.gating.router import GatingRouter
+from core.media.sampler import (
+    Sample,
+    _load_cache,
+    build_filter_complex,
+    choose_hud_window,
+    compose_contact_sheet,
+    compose_hud_sheet,
+    crop_hud_frame,
+    estimate_content_box,
+    hud_crop_fraction,
+)
 from core.models import (
+    CleanedSubtitleParagraph,
     CleanedVideoBundle,
     CommentEvidence,
     GatingPlan,
@@ -46,6 +63,7 @@ from core.perception.prompt_builder import (
     GAMEPLAY_EXTRACTOR_SYSTEM_PROMPT,
     SheetInfo,
     build_analysis_input,
+    fallback_image_indices,
     pick_system_prompt,
 )
 
@@ -199,7 +217,7 @@ def test_sheet_and_prompt():
         hud_sheet = compose_hud_sheet(hud_samples, tmp_path / "hud.jpg")
         assert hud_sheet and hud_sheet.exists(), "HUD 时间带未生成"
         with Image.open(hud_sheet) as img:
-            assert img.size == (1600, 816), img.size
+            assert img.width == 1600 and 700 <= img.height <= 1200, img.size
 
         meta = _ba_meta()
         bundle = CleanedVideoBundle(
@@ -240,6 +258,117 @@ def test_sheet_and_prompt():
         print(f"  -> 联表尺寸正确，prompt {len(prompt)} 字，证据索引与文字轴均已注入")
 
 
+def test_evidence_regressions():
+    print(">>> [测试 8] HUD 配置/降级/竖屏/缓存/分P 回归...")
+    from dataclasses import replace
+
+    from PIL import Image
+
+    meta = _ba_meta()
+    bundle = CleanedVideoBundle(
+        meta=meta,
+        clean_desc="",
+        timestamps_outline=[],
+        subtitles=[],
+        pinned_comment=None,
+        curated_comments=[],
+        high_energy_points=[],
+        gameplay=True,
+    )
+    router = GatingRouter()
+    plan2 = router.decide(bundle, 2)
+    plan12 = router.decide(bundle, 12)
+    assert plan2.hud_max_sheets == 2 and plan12.hud_max_sheets == 12, "HUD 配置未接线"
+    long_meta = replace(meta, duration=2400)
+    long_plan = router.decide(replace(bundle, meta=long_meta), 4)
+    assert long_plan.need_hud, "40 分钟实况应继续出 HUD"
+
+    sheets = [SheetInfo(index=i, kind="hud", start=i * 2, end=i * 2 + 2, cells=4, interval=2.0) for i in range(1, 7)]
+    sheets += [SheetInfo(index=7, kind="scene", start=0, end=20, cells=6), SheetInfo(index=8, kind="scene", start=20, end=40, cells=6)]
+    evidence = EvidenceBundle(sheets=sheets, frame_times=[0, 10, 20, 30, 40], hud_interval=2.0, sample_note="单测")
+    picks = fallback_image_indices(evidence)
+    assert picks == [1, 3, 6, 7], f"降级应优先 HUD，实际 {picks}"
+    subset = evidence.subset(set(picks))
+    assert [s.index for s in subset.sheets] == [1, 2, 3, 4]
+    prompt = build_analysis_input(bundle, plan2, evidence=subset)
+    assert "图 1~3：底栏操作栏时间带" in prompt, "HUD 未排在图像索引前面"
+    assert "图 4（场景 1/1）" in prompt, "降级后的场景编号未重排"
+
+    assert hud_crop_fraction(True) == (0.0, 0.75, 1.0, 0.25)
+    portrait_filter = build_filter_complex(1.0, 1.0, True)
+    assert "ih*0.25" in portrait_filter and "ih*0.75" in portrait_filter
+
+    with tempfile.TemporaryDirectory() as tmp:
+        frame = Path(tmp) / "portrait.jpg"
+        img = Image.new("RGB", (200, 400), (20, 20, 20))
+        img.paste((180, 40, 40), (0, 300, 200, 400))
+        img.save(frame)
+        hud_crop = crop_hud_frame(frame)
+        assert hud_crop and hud_crop.exists()
+        with Image.open(hud_crop) as out:
+            assert out.width == 400 and 180 <= out.height <= 220, out.size
+
+        # 横屏底栏：高边缘密度在右侧时，应选右侧窗口而不是固定居中
+        band = Image.new("RGB", (1000, 100), (0, 0, 0))
+        for x in range(620, 900, 10):
+            band.paste((255, 255, 255), (x, 20, x + 4, 80))
+        window = choose_hud_window(band)
+        assert window[0] >= 0.5, f"自适应窗口未选中右侧: {window}"
+
+        center_band = Image.new("RGB", (1000, 100), (0, 0, 0))
+        for x in range(350, 650, 10):
+            center_band.paste((255, 255, 255), (x, 20, x + 4, 80))
+        center_window = choose_hud_window(center_band)
+        assert center_window[0] < 0.5, f"自适应窗口未选中居中: {center_window}"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        images = []
+        for i in range(4):
+            path = tmp_path / f"letterbox_{i}.jpg"
+            img = Image.new("RGB", (120, 120), (0, 0, 0))
+            img.paste((220, 220, 220), (0, 30, 120, 90))
+            img.save(path)
+            images.append(path)
+        box = estimate_content_box(images)
+        assert box is not None, "纯 Pillow 黑边检测失败"
+        assert 0.2 <= box[1] <= 0.35 and 0.65 <= box[3] <= 0.8, box
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        thumb_dir = tmp_path / "thumbs"
+        hud_dir = tmp_path / "hud"
+        thumb_dir.mkdir()
+        for i in range(2):
+            (thumb_dir / f"{i + 1:05d}.jpg").write_bytes(b"x")
+        meta_path = tmp_path / "sample_meta.json"
+        meta_path.write_text(
+            '{"duration": 100, "thumb_fps": 1.0, "hud_interval": 2.0, "thumb_count": 2, '
+            '"hud_count": 0, "source_width": 1920, "source_height": 1080, '
+            '"portrait": false, "crop_version": 3}',
+            encoding="utf-8",
+        )
+        assert _load_cache(meta_path, 100, 1.0, 2.0, thumb_dir, hud_dir, 1920, 1080, False)
+        assert not _load_cache(meta_path, 100, 1.0, 2.0, thumb_dir, hud_dir, 1280, 720, False)
+
+    subtitles = [
+        CleanedSubtitleParagraph(start_seconds=i * 20.0, end_seconds=i * 20.0 + 10, text=f"第{i}段")
+        for i in range(500)
+    ]
+    subtitle_prompt = build_analysis_input(replace(bundle, subtitles=subtitles), plan2)
+    assert "均匀抽样 240 段" in subtitle_prompt
+    assert "第0段" in subtitle_prompt and "第497段" in subtitle_prompt, "长字幕后半段被截断"
+
+    cad = RawVideoMeta(
+        bvid="BV1cad", aid=1, cid=2, title="AutoCAD 2026 教程", desc="软件教程",
+        up_name="up", up_uid=1, duration=600, pubdate=0, tname="科技", tags=["软件"],
+    )
+    assert not is_gameplay(cad), "AutoCAD 教程被误判为游戏实况"
+    assert extract_page_number("https://www.bilibili.com/video/BV1x?p=3") == 3
+    assert with_page("BV1x", 3) == "BV1x?p=3"
+    print("  -> HUD 配置生效、降级保 HUD、竖屏/缓存/长字幕/分P/误判均正常")
+
+
 def run_all_tests():
     print("=" * 52)
     print("开始执行画面证据 / 字幕可信度 / 文字轴离线验证...")
@@ -251,6 +380,7 @@ def run_all_tests():
     test_axis_comments()
     test_gameplay_detection()
     test_sheet_and_prompt()
+    test_evidence_regressions()
     print("=" * 52)
     print("[PASS] All perception tests passed successfully!")
     print("=" * 52)

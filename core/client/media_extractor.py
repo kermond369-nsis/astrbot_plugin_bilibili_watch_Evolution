@@ -13,12 +13,7 @@ import subprocess
 from pathlib import Path
 from typing import Sequence
 
-try:  # 允许在无 AstrBot 运行时的离线环境里单测
-    from astrbot.api import logger
-except Exception:  # pragma: no cover
-    import logging
-
-    logger = logging.getLogger("bilibili_watch")
+from astrbot.api import logger
 
 
 class MediaExtractor:
@@ -80,6 +75,7 @@ class MediaExtractor:
         referer: str = "https://www.bilibili.com/",
         user_agent: str = "",
         cookie: str = "",
+        timeout: int = 90,
     ) -> bool:
         """从 B 站 Dash 音频流中提取经过极致压缩的轻量音频（供 ASR 上传使用）。
 
@@ -125,10 +121,45 @@ class MediaExtractor:
         ]
 
         try:
-            subprocess.run(cmd, check=True, capture_output=True, timeout=90)
+            subprocess.run(cmd, check=True, capture_output=True, timeout=timeout)
             return output_mp3_path.exists() and output_mp3_path.stat().st_size > 0
         except Exception as exc:
             logger.error(f"提取 ASR 音频流失败: {exc}")
+            return False
+
+    def slice_audio(
+        self,
+        source_path: Path,
+        output_path: Path,
+        start_seconds: float,
+        duration_seconds: int,
+    ) -> bool:
+        """把已下载的整段 ASR 音频本地切块，避免每块重新连 CDN。"""
+        if not source_path.exists() or duration_seconds <= 0:
+            return False
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        cmd = [
+            self.get_ffmpeg_exe(),
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-ss",
+            f"{max(0.0, start_seconds):.2f}",
+            "-t",
+            str(int(duration_seconds)),
+            "-i",
+            str(source_path),
+            "-vn",
+            "-c",
+            "copy",
+            "-y",
+            str(output_path),
+        ]
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, timeout=60)
+            return output_path.exists() and output_path.stat().st_size > 0
+        except Exception as exc:
+            logger.warning(f"本地切分 ASR 音频失败: {exc}")
             return False
 
     def extract_frames(

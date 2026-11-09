@@ -11,10 +11,13 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Sequence
 
 from core.models import CleanedVideoBundle, GatingPlan, ProcessingMode
+
+# 纯文本长视频的字幕最多送 240 段；超出时按时间均匀抽样，避免只覆盖前 25 分钟
+MAX_PROMPT_SUBTITLES = 240
 
 # 教程/攻略类结构化提炼 System Prompt
 TUTORIAL_EXTRACTOR_SYSTEM_PROMPT = """你是一个专业的视频内容分析与结构化提炼工具。
@@ -146,6 +149,71 @@ class EvidenceBundle:
     def hud_sheets(self) -> list[SheetInfo]:
         return [s for s in self.sheets if s.kind == "hud"]
 
+    def subset(self, indices: set[int]) -> "EvidenceBundle":
+        """按原图序号裁剪证据清单，并重新编号以匹配实际发送的图片顺序。"""
+        kept = sorted(
+            (s for s in self.sheets if s.index in indices), key=lambda s: s.index
+        )
+        mapping = {sheet.index: pos for pos, sheet in enumerate(kept, start=1)}
+        new_sheets: list[SheetInfo] = []
+        counters: dict[str, int] = {}
+        for sheet in kept:
+            counters[sheet.kind] = counters.get(sheet.kind, 0) + 1
+            new_sheets.append(
+                replace(
+                    sheet,
+                    index=mapping[sheet.index],
+                    sheet_no=counters[sheet.kind],
+                )
+            )
+        scene_ranges = [
+            (s.start, s.end) for s in new_sheets if s.kind == "scene"
+        ]
+        frame_times = (
+            [
+                t
+                for t in self.frame_times
+                if any(start - 0.5 <= t <= end + 0.5 for start, end in scene_ranges)
+            ]
+            if scene_ranges
+            else []
+        )
+        note = self.sample_note
+        if len(new_sheets) < len(self.sheets):
+            note = (
+                note
+                + f"；本次为降级请求，仅附 {len(new_sheets)}/{len(self.sheets)} 张图"
+            )
+        return EvidenceBundle(
+            sheets=new_sheets,
+            frame_times=frame_times,
+            hud_interval=self.hud_interval,
+            sample_note=note,
+        )
+
+
+def fallback_image_indices(
+    evidence: EvidenceBundle | None, limit: int = 4
+) -> list[int]:
+    """图片超限时的降级顺序：优先 HUD，再补 1~3 张场景。"""
+    if evidence is None:
+        return list(range(1, limit + 1))
+    hud = [s.index for s in evidence.hud_sheets()]
+    scene = [s.index for s in evidence.scene_sheets()]
+    if not hud:
+        return scene[:limit]
+    take = min(3, len(hud), max(1, limit - 1))
+    if take == 1:
+        picks = [hud[0]]
+    else:
+        picks = [
+            hud[round(i * (len(hud) - 1) / (take - 1))]
+            for i in range(take)
+        ]
+    picks = list(dict.fromkeys(picks))
+    picks.extend(scene[: max(0, limit - len(picks))])
+    return sorted(picks)
+
 
 def normalize_quotes(text: str) -> str:
     """把英文半角双引号转为成对中文全角双引号。"""
@@ -177,30 +245,33 @@ def _format_evidence(evidence: EvidenceBundle | None) -> list[str]:
     lines = ["【图像证据索引（按发送顺序编号）】"]
     scene = evidence.scene_sheets()
     hud = evidence.hud_sheets()
-    if scene:
-        lines.append(
-            f"- 图 {scene[0].index}~{scene[-1].index}：场景联表，每张 {scene[0].cells} 格，"
-            "格内左上角标注「序号 + 时间」；一帧只是该时刻的截图，不是连续录像。"
-        )
+    # 图片顺序固定为 HUD 在前、场景在后；这里必须与 main.py 的拼图顺序一致
     if hud:
         lines.append(
             f"- 图 {hud[0].index}~{hud[-1].index}：底栏操作栏时间带，"
             f"每格间隔约 {evidence.hud_interval or hud[0].interval:.1f} 秒；"
             "每格内是游戏底部 UI 原图（费用/技能卡/血条等），左上角是该格时间。"
         )
+    if scene:
+        lines.append(
+            f"- 图 {scene[0].index}~{scene[-1].index}：场景联表，每张 {scene[0].cells} 格，"
+            "格内左上角标注「序号 + 时间」；一帧只是该时刻的截图，不是连续录像。"
+        )
     if evidence.frame_times:
         stamps = "、".join(_format_time(t) for t in evidence.frame_times[:48])
         lines.append(f"- 场景联表覆盖的时间点：{stamps}")
-    for sheet in evidence.scene_sheets():
-        lines.append(
-            f"  · 图 {sheet.index}（{sheet.sheet_no}/{len(scene)}）：{_format_time(sheet.start)}"
-            f"–{_format_time(sheet.end)}，{sheet.cells} 格"
-        )
-    for sheet in evidence.hud_sheets():
-        lines.append(
-            f"  · 图 {sheet.index}（{sheet.sheet_no}/{len(hud)}）：{_format_time(sheet.start)}"
-            f"–{_format_time(sheet.end)}，{sheet.cells} 格，每格约 {sheet.interval:.1f}s"
-        )
+    for sheet in sorted(evidence.sheets, key=lambda s: s.index):
+        if sheet.kind == "hud":
+            lines.append(
+                f"  · 图 {sheet.index}（HUD {sheet.sheet_no}/{len(hud)}）："
+                f"{_format_time(sheet.start)}–{_format_time(sheet.end)}，"
+                f"{sheet.cells} 格，每格约 {sheet.interval:.1f}s"
+            )
+        else:
+            lines.append(
+                f"  · 图 {sheet.index}（场景 {sheet.sheet_no}/{len(scene)}）："
+                f"{_format_time(sheet.start)}–{_format_time(sheet.end)}，{sheet.cells} 格"
+            )
     if evidence.sample_note:
         lines.append(f"- 采样说明：{evidence.sample_note}")
     lines.append(
@@ -222,11 +293,23 @@ def _format_subtitle_section(bundle: CleanedVideoBundle) -> list[str]:
             return ["【台词/字幕】\n（无官方字幕，主要依据画面、简介与弹幕高能点判断）"]
         return ["【台词/字幕】\n（无可信字幕，主要依据画面、简介与评论判断）"]
 
+    subtitles = list(bundle.subtitles)
+    sampled_note = ""
+    if len(subtitles) > MAX_PROMPT_SUBTITLES:
+        step = len(subtitles) / MAX_PROMPT_SUBTITLES
+        subtitles = [
+            subtitles[min(len(subtitles) - 1, int(i * step))]
+            for i in range(MAX_PROMPT_SUBTITLES)
+        ]
+        sampled_note = (
+            f"（共 {len(bundle.subtitles)} 段，已按时间均匀抽样 "
+            f"{MAX_PROMPT_SUBTITLES} 段以覆盖全片）"
+        )
     sub_lines = [
         f"[{_format_time(p.start_seconds)}] {normalize_quotes(p.text)}"
-        for p in bundle.subtitles[:60]
+        for p in subtitles
     ]
-    header = "【台词/字幕摘录】"
+    header = "【台词/字幕摘录】" + sampled_note
     if trust and trust.level == "weak":
         header += f"\n（可信度提示：{trust.note()}；与画面冲突时以画面为准）"
     elif trust and trust.level == "ok":
@@ -259,9 +342,14 @@ def build_analysis_input(
         f"【视频基本信息】\n"
         f"标题：{normalize_quotes(meta.title)}\n"
         f"UP主：{normalize_quotes(meta.up_name)}（UID {meta.up_uid}） | 时长：{_format_time(meta.duration)}\n"
-        f"分区：{meta.tname or '未知'} | 标签：{tags}\n"
-        f"播放：{meta.views} | 弹幕：{meta.danmaku} | 点赞：{meta.likes}\n"
-        f"清洗后简介：\n{normalize_quotes(bundle.clean_desc) or '（无核心简介）'}"
+        + (
+            f"分P：第 {meta.page}/{meta.page_count} P（本报告只分析当前 P）\n"
+            if meta.page_count > 1
+            else ""
+        )
+        + f"分区：{meta.tname or '未知'} | 标签：{tags}\n"
+        + f"播放：{meta.views} | 弹幕：{meta.danmaku} | 点赞：{meta.likes}\n"
+        + f"清洗后简介：\n{normalize_quotes(bundle.clean_desc) or '（无核心简介）'}"
     ]
 
     sections.extend(_format_evidence(evidence))
